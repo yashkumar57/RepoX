@@ -284,6 +284,7 @@ Individual analysis engines should be replaceable without restructuring the enti
 Documentation, contribution guidelines, issue tracking, and development practices should allow other developers to understand and contribute to RepoX.
 6. Build incrementally
 Each milestone should produce a functional improvement rather than accumulating unfinished features.
+
 Future Vision
 After the MVP, RepoX may evolve into a broader repository intelligence ecosystem.
 Potential capabilities include:
@@ -296,7 +297,7 @@ Affected modules
           ↓
 Affected services
           ↓
-                      Potentially affected APIs
+Potentially affected APIs
 Developer Onboarding
 Automatically generate:
 	Repository overview
