@@ -20,8 +20,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
-    files = scan_repository(root)
+
+    scan_result = scan_repository(root)
+    files = scan_result.files
     relationships = resolve_dependencies(root, files)
+
     if args.format == "mermaid":
         print("flowchart LR")
         node_ids = {path: f"file_{index}" for index, path in enumerate(sorted(files))}
@@ -32,36 +35,55 @@ def main(argv: list[str] | None = None) -> None:
             target = node_ids.get(relationship.target)
             if source and target:
                 print(f"    {source} --> {target}")
+
+        if scan_result.errors:
+            print()
+            print("%% Scan warnings:")
+            for error in scan_result.errors:
+                print(f"%% {error.path}: {error.message}")
+
         return
+
     function_count = sum(
         len(file.functions) + sum(len(cls.methods) for cls in file.classes)
         for file in files.values()
     )
     class_count = sum(len(file.classes) for file in files.values())
     import_count = sum(len(file.imports) for file in files.values())
+
     print(f"Repository: {root}")
     print(f"Python files: {len(files)}")
+    print(f"Files that could not be read: {len(scan_result.errors)}")
     print(f"Classes: {class_count}")
     print(f"Functions and methods: {function_count}")
     print(f"Import statements/symbols detected: {import_count}")
     print(f"Local file dependencies: {len(relationships)}")
+
     error_count = sum(len(file.parse_errors) for file in files.values())
     files_with_errors_count = sum(bool(file.parse_errors) for file in files.values())
     print(f"Files with parse errors: {files_with_errors_count}")
     print(f"Parse errors detected: {error_count}")
+
     print()
     print("Files:")
     for path in sorted(files):
         print(f"  - {path}")
+
     print("\nDependencies:")
     if not relationships:
         print("  No local file dependencies resolved.")
     else:
         for relationship in relationships:
             print(f"  {relationship.source} -> {relationship.target}")
+
     files_with_errors = [file for file in files.values() if file.parse_errors]
     if files_with_errors:
         print("\nParse errors:")
         for file in files_with_errors:
             for error in file.parse_errors:
                 print(f"  {file.path}: {error}")
+
+    if scan_result.errors:
+        print("\nScan errors:")
+        for error in scan_result.errors:
+            print(f"  {error.path}: {error.message}")

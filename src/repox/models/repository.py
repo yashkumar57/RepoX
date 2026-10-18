@@ -65,3 +65,19 @@ class Relationship:
         "inherits",
     ]
     evidence: str | None = None
+
+
+@dataclass
+class ScanError:
+    """A file-level error encountered during repository scanning."""
+
+    path: str
+    message: str
+
+
+@dataclass
+class ScanResult:
+    """Results and diagnostics produced by a repository scan."""
+
+    files: dict[str, FileInfo] = field(default_factory=dict)
+    errors: list[ScanError] = field(default_factory=list)
