@@ -1,3 +1,5 @@
+import ast
+
 import tree_sitter_python
 from tree_sitter import Language, Parser
 
@@ -29,53 +31,94 @@ def _syntax_errors(root_node) -> list[str]:
     """Collect syntax errors reported by Tree-sitter."""
     errors = []
     stack = [root_node]
+
     while stack:
         node = stack.pop()
+
         if node.type == "ERROR":
             errors.append(f"Syntax error near line {node.start_point.row + 1}")
         elif node.is_missing:
             errors.append(f"Missing {node.type} near line {node.start_point.row + 1}")
+
         stack.extend(reversed(node.children))
+
     return errors
 
 
 def _parameters(source: bytes, function_node) -> list[str]:
     """Extract parameter names from a function definition."""
     parameters_node = function_node.child_by_field_name("parameters")
+
     if parameters_node is None:
         return []
+
     result = []
+
     for parameter in parameters_node.named_children:
         if parameter.type == "identifier":
             result.append(_text(source, parameter))
             continue
-        # Handles common forms such as typed and default parameters.
+
         name_node = parameter.child_by_field_name("name")
+
         if name_node is not None:
             result.append(_text(source, name_node))
         elif parameter.named_children:
             result.append(_text(source, parameter.named_children[0]))
+
     return result
+
+
+def _docstring(source: bytes, body_node) -> str | None:
+    """Extract a function or class docstring."""
+    if body_node is None or not body_node.named_children:
+        return None
+
+    first_statement = body_node.named_children[0]
+
+    if first_statement.type != "expression_statement":
+        return None
+
+    if not first_statement.named_children:
+        return None
+
+    expression = first_statement.named_children[0]
+
+    if expression.type != "string":
+        return None
+
+    try:
+        value = ast.literal_eval(_text(source, expression))
+    except (SyntaxError, ValueError):
+        return None
+
+    return value if isinstance(value, str) else None
 
 
 def _function_info(
     source: bytes,
     function_node,
     parent_class: str | None = None,
+    parent_scope: str | None = None,
 ) -> FunctionInfo:
     """Extract metadata from a function or method."""
     name_node = function_node.child_by_field_name("name")
     body_node = function_node.child_by_field_name("body")
+
     calls = []
     return_expressions = []
 
     def visit(node):
-        # Don't attribute a nested function's calls to its enclosing function.
-        if node != function_node and node.type == "function_definition":
+        # Nested functions have their own metadata and call ownership.
+        if node != function_node and node.type in {
+            "function_definition",
+            "class_definition",
+        }:
             return
 
         if node.type == "call":
             callee = node.child_by_field_name("function")
+
             if callee is not None:
                 calls.append(_text(source, callee))
 
@@ -96,19 +139,64 @@ def _function_info(
         calls=calls,
         location=_location(function_node),
         parent_class=parent_class,
+        docstring=_docstring(source, body_node),
+        parent_scope=parent_scope,
     )
 
 
-def _imports(source: bytes, root_node) -> list[ImportInfo]:
-    """Extract basic Python import statements."""
-    imports = []
+def _collect_nested_functions(
+    source: bytes,
+    function_node,
+    functions: list[FunctionInfo],
+    parent_scope: str,
+    parent_class: str | None = None,
+) -> None:
+    """Discover nested functions while preserving their lexical scope."""
+    body_node = function_node.child_by_field_name("body")
 
-    for node in root_node.named_children:
+    if body_node is None:
+        return
+
+    def visit(node):
+        for child in node.named_children:
+            if child.type == "function_definition":
+                nested_info = _function_info(
+                    source,
+                    child,
+                    parent_class=parent_class,
+                    parent_scope=parent_scope,
+                )
+
+                functions.append(nested_info)
+
+                _collect_nested_functions(
+                    source,
+                    child,
+                    functions,
+                    parent_scope=f"{parent_scope}.{nested_info.name}",
+                    parent_class=parent_class,
+                )
+
+            elif child.type != "class_definition":
+                visit(child)
+
+    visit(body_node)
+
+
+def _imports(source: bytes, root_node) -> list[ImportInfo]:
+    """Extract import statements from anywhere in a Python file."""
+    imports = []
+    stack = [root_node]
+
+    while stack:
+        node = stack.pop()
+
         if node.type == "import_statement":
             for child in node.named_children:
                 if child.type == "aliased_import":
                     name_node = child.named_children[0]
                     alias_node = child.child_by_field_name("alias")
+
                     imports.append(
                         ImportInfo(
                             module=_text(source, name_node),
@@ -144,9 +232,11 @@ def _imports(source: bytes, root_node) -> list[ImportInfo]:
                             location=_location(node),
                         )
                     )
+
                 elif child.type == "aliased_import":
                     name_node = child.named_children[0]
                     alias_node = child.child_by_field_name("alias")
+
                     imports.append(
                         ImportInfo(
                             module=module,
@@ -160,6 +250,8 @@ def _imports(source: bytes, root_node) -> list[ImportInfo]:
                         )
                     )
 
+        stack.extend(reversed(node.named_children))
+
     return imports
 
 
@@ -170,14 +262,22 @@ def parse_python(source_code: str, path: str = "<memory>") -> FileInfo:
     parser = Parser(PYTHON_LANGUAGE)
     tree = parser.parse(source)
     root = tree.root_node
-    parse_errors = _syntax_errors(root)
 
+    parse_errors = _syntax_errors(root)
     classes = []
     functions = []
 
     for node in root.named_children:
         if node.type == "function_definition":
-            functions.append(_function_info(source, node))
+            function_info = _function_info(source, node)
+            functions.append(function_info)
+
+            _collect_nested_functions(
+                source,
+                node,
+                functions,
+                parent_scope=function_info.name,
+            )
 
         elif node.type == "class_definition":
             name_node = node.child_by_field_name("name")
@@ -188,19 +288,36 @@ def parse_python(source_code: str, path: str = "<memory>") -> FileInfo:
             if body_node is not None:
                 for child in body_node.named_children:
                     if child.type == "function_definition":
-                        methods.append(
-                            _function_info(
-                                source,
-                                child,
-                                parent_class=class_name,
-                            )
+                        method_info = _function_info(
+                            source,
+                            child,
+                            parent_class=class_name,
                         )
+                        methods.append(method_info)
+
+                        _collect_nested_functions(
+                            source,
+                            child,
+                            functions,
+                            parent_scope=f"{class_name}.{method_info.name}",
+                            parent_class=class_name,
+                        )
+
+            superclasses_node = node.child_by_field_name("superclasses")
+
+            bases = (
+                [_text(source, child) for child in superclasses_node.named_children]
+                if superclasses_node is not None
+                else []
+            )
 
             classes.append(
                 ClassInfo(
                     name=class_name,
                     methods=methods,
                     location=_location(node),
+                    bases=bases,
+                    docstring=_docstring(source, body_node),
                 )
             )
 

@@ -29,6 +29,8 @@ class FunctionInfo:
     calls: list[str] = field(default_factory=list)
     location: SourceLocation | None = None
     parent_class: str | None = None
+    docstring: str | None = None
+    parent_scope: str | None = None
 
 
 @dataclass
@@ -38,6 +40,8 @@ class ClassInfo:
     name: str
     methods: list[FunctionInfo] = field(default_factory=list)
     location: SourceLocation | None = None
+    bases: list[str] = field(default_factory=list)
+    docstring: str | None = None
 
 
 @dataclass
@@ -58,12 +62,7 @@ class Relationship:
 
     source: str
     target: str
-    kind: Literal[
-        "imports",
-        "calls",
-        "contains",
-        "inherits",
-    ]
+    kind: Literal["imports", "calls", "contains", "inherits"]
     evidence: str | None = None
 
 

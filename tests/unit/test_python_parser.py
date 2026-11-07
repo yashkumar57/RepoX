@@ -64,3 +64,107 @@ def greet(name)
     assert result.path == "broken.py"
     assert result.parse_errors
     assert any("line" in error.lower() for error in result.parse_errors)
+
+
+def test_parser_extracts_class_docstring_and_inheritance():
+    source = '''\
+class AdminService(BaseService, logging.Logger):
+    """Manages administrative operations."""
+
+    def delete_user(self, user_id):
+        """Delete a user by ID."""
+        return remove_user(user_id)
+'''
+    result = parse_python(source)
+
+    admin = result.classes[0]
+
+    assert admin.name == "AdminService"
+    assert admin.bases == ["BaseService", "logging.Logger"]
+    assert admin.docstring == "Manages administrative operations."
+    assert admin.methods[0].docstring == "Delete a user by ID."
+
+
+def test_parser_extracts_function_docstring():
+    source = '''\
+def calculate_total(items):
+    """Calculate the total price of items."""
+    return sum(items)
+'''
+    result = parse_python(source)
+
+    assert result.functions[0].docstring == ("Calculate the total price of items.")
+
+
+def test_parser_handles_missing_docstrings_and_inheritance():
+    source = """\
+class SimpleService:
+    def run(self):
+        return True
+"""
+    result = parse_python(source)
+
+    simple = result.classes[0]
+
+    assert simple.bases == []
+    assert simple.docstring is None
+    assert simple.methods[0].docstring is None
+
+
+def test_parser_extracts_nested_imports():
+    source = """\
+def load_database():
+    import sqlite3
+    from database import connect
+    return connect()
+"""
+    result = parse_python(source)
+
+    imports = {(item.module, item.symbol) for item in result.imports}
+
+    assert ("sqlite3", None) in imports
+    assert ("database", "connect") in imports
+
+
+def test_parser_extracts_nested_functions():
+    source = """\
+def process_user(user_id):
+    def normalize_user():
+        return format_name(user_id)
+
+    return normalize_user()
+"""
+    result = parse_python(source)
+
+    assert len(result.functions) == 2
+
+    outer = next(f for f in result.functions if f.name == "process_user")
+    inner = next(f for f in result.functions if f.name == "normalize_user")
+
+    assert outer.parent_scope is None
+    assert inner.parent_scope == "process_user"
+
+    assert outer.calls == ["normalize_user"]
+    assert inner.calls == ["format_name"]
+
+def test_parser_extracts_deeply_nested_functions():
+    source = """\
+def outer():
+    def middle():
+        def inner():
+            return 42
+        return inner()
+    return middle()
+"""
+    result = parse_python(source)
+
+    nested = {
+        f.name: f.parent_scope
+        for f in result.functions
+    }
+
+    assert nested == {
+        "outer": None,
+        "middle": "outer",
+        "inner": "outer.middle",
+    }
