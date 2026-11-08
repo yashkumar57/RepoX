@@ -1,7 +1,7 @@
-import ast
+"""Extract deterministic Python repository metadata using the standard AST."""
 
-import tree_sitter_python
-from tree_sitter import Language, Parser
+import ast
+from hashlib import sha256
 
 from repox.models.repository import (
     ClassInfo,
@@ -11,326 +11,241 @@ from repox.models.repository import (
     SourceLocation,
 )
 
-PYTHON_LANGUAGE = Language(tree_sitter_python.language())
+
+def _location(node: ast.AST) -> SourceLocation:
+    """Return a one-based source range, including decorators when present."""
+    start_line = getattr(node, "lineno", 1)
+    decorators = getattr(node, "decorator_list", ())
+    if decorators:
+        start_line = min(start_line, *(decorator.lineno for decorator in decorators))
+
+    end_line = getattr(node, "end_lineno", start_line)
+    return SourceLocation(start_line=int(start_line), end_line=int(end_line))
 
 
-def _text(source: bytes, node) -> str:
-    """Return the source text represented by a syntax-tree node."""
-    return source[node.start_byte : node.end_byte].decode("utf-8")
+def _segment(source: str, node: ast.AST | None) -> str:
+    """Return the exact source segment for an AST node when available."""
+    if node is None:
+        return ""
+    segment = ast.get_source_segment(source, node)
+    return segment if segment is not None else ast.unparse(node)
 
 
-def _location(node) -> SourceLocation:
-    """Convert Tree-sitter's zero-based rows to one-based line numbers."""
-    return SourceLocation(
-        start_line=node.start_point.row + 1,
-        end_line=node.end_point.row + 1,
-    )
+def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Extract parameter names in declaration order."""
+    args = node.args
+    parameters = [arg.arg for arg in args.posonlyargs]
+    parameters.extend(arg.arg for arg in args.args)
+
+    if args.vararg is not None:
+        parameters.append(args.vararg.arg)
+
+    parameters.extend(arg.arg for arg in args.kwonlyargs)
+
+    if args.kwarg is not None:
+        parameters.append(args.kwarg.arg)
+
+    return parameters
 
 
-def _syntax_errors(root_node) -> list[str]:
-    """Collect syntax errors reported by Tree-sitter."""
-    errors = []
-    stack = [root_node]
+def _function_expressions(
+    source: str, node: ast.FunctionDef | ast.AsyncFunctionDef
+) -> tuple[list[str], list[str]]:
+    """Collect calls and return expressions owned by one function scope."""
+    calls: list[str] = []
+    return_expressions: list[str] = []
+    stack = list(reversed(node.body))
 
     while stack:
-        node = stack.pop()
+        current = stack.pop()
 
-        if node.type == "ERROR":
-            errors.append(f"Syntax error near line {node.start_point.row + 1}")
-        elif node.is_missing:
-            errors.append(f"Missing {node.type} near line {node.start_point.row + 1}")
-
-        stack.extend(reversed(node.children))
-
-    return errors
-
-
-def _parameters(source: bytes, function_node) -> list[str]:
-    """Extract parameter names from a function definition."""
-    parameters_node = function_node.child_by_field_name("parameters")
-
-    if parameters_node is None:
-        return []
-
-    result = []
-
-    for parameter in parameters_node.named_children:
-        if parameter.type == "identifier":
-            result.append(_text(source, parameter))
+        # Nested scopes own their own calls and returns.
+        if isinstance(
+            current,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+        ):
             continue
 
-        name_node = parameter.child_by_field_name("name")
+        if isinstance(current, ast.Call):
+            calls.append(_segment(source, current.func))
+        elif isinstance(current, ast.Return) and current.value is not None:
+            return_expressions.append(_segment(source, current.value))
 
-        if name_node is not None:
-            result.append(_text(source, name_node))
-        elif parameter.named_children:
-            result.append(_text(source, parameter.named_children[0]))
+        stack.extend(reversed(list(ast.iter_child_nodes(current))))
 
-    return result
-
-
-def _docstring(source: bytes, body_node) -> str | None:
-    """Extract a function or class docstring."""
-    if body_node is None or not body_node.named_children:
-        return None
-
-    first_statement = body_node.named_children[0]
-
-    if first_statement.type != "expression_statement":
-        return None
-
-    if not first_statement.named_children:
-        return None
-
-    expression = first_statement.named_children[0]
-
-    if expression.type != "string":
-        return None
-
-    try:
-        value = ast.literal_eval(_text(source, expression))
-    except (SyntaxError, ValueError):
-        return None
-
-    return value if isinstance(value, str) else None
+    return calls, return_expressions
 
 
 def _function_info(
-    source: bytes,
-    function_node,
+    source: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
     parent_class: str | None = None,
     parent_scope: str | None = None,
 ) -> FunctionInfo:
-    """Extract metadata from a function or method."""
-    name_node = function_node.child_by_field_name("name")
-    body_node = function_node.child_by_field_name("body")
-
-    calls = []
-    return_expressions = []
-
-    def visit(node):
-        # Nested functions have their own metadata and call ownership.
-        if node != function_node and node.type in {
-            "function_definition",
-            "class_definition",
-        }:
-            return
-
-        if node.type == "call":
-            callee = node.child_by_field_name("function")
-
-            if callee is not None:
-                calls.append(_text(source, callee))
-
-        elif node.type == "return_statement":
-            if node.named_children:
-                return_expressions.append(_text(source, node.named_children[-1]))
-
-        for child in node.named_children:
-            visit(child)
-
-    if body_node is not None:
-        visit(body_node)
+    calls, return_expressions = _function_expressions(source, node)
 
     return FunctionInfo(
-        name=_text(source, name_node),
-        parameters=_parameters(source, function_node),
+        name=node.name,
+        parameters=_parameters(node),
         return_expressions=return_expressions,
         calls=calls,
-        location=_location(function_node),
+        location=_location(node),
         parent_class=parent_class,
-        docstring=_docstring(source, body_node),
+        docstring=ast.get_docstring(node, clean=False),
         parent_scope=parent_scope,
     )
 
 
 def _collect_nested_functions(
-    source: bytes,
-    function_node,
+    source: str,
+    body: list[ast.stmt],
     functions: list[FunctionInfo],
     parent_scope: str,
     parent_class: str | None = None,
 ) -> None:
-    """Discover nested functions while preserving their lexical scope."""
-    body_node = function_node.child_by_field_name("body")
-
-    if body_node is None:
-        return
-
-    def visit(node):
-        for child in node.named_children:
-            if child.type == "function_definition":
-                nested_info = _function_info(
-                    source,
-                    child,
-                    parent_class=parent_class,
-                    parent_scope=parent_scope,
-                )
-
-                functions.append(nested_info)
-
-                _collect_nested_functions(
-                    source,
-                    child,
-                    functions,
-                    parent_scope=f"{parent_scope}.{nested_info.name}",
-                    parent_class=parent_class,
-                )
-
-            elif child.type != "class_definition":
-                visit(child)
-
-    visit(body_node)
-
-
-def _imports(source: bytes, root_node) -> list[ImportInfo]:
-    """Extract imports while preserving import type and aliases."""
-    imports = []
-    stack = [root_node]
+    """Collect nested functions without crossing nested class boundaries."""
+    stack: list[tuple[ast.AST, str]] = [
+        (child, parent_scope) for child in reversed(body)
+    ]
 
     while stack:
-        node = stack.pop()
+        node, scope = stack.pop()
 
-        if node.type == "import_statement":
-            for child in node.named_children:
-                if child.type == "aliased_import":
-                    name_node = child.named_children[0]
-                    alias_node = child.child_by_field_name("alias")
+        if isinstance(node, ast.ClassDef):
+            continue
 
-                    imports.append(
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            info = _function_info(
+                source,
+                node,
+                parent_class=parent_class,
+                parent_scope=scope,
+            )
+            functions.append(info)
+            stack.extend(
+                (child, f"{scope}.{info.name}") for child in reversed(node.body)
+            )
+            continue
+
+        stack.extend(
+            (child, scope) for child in reversed(list(ast.iter_child_nodes(node)))
+        )
+
+
+def _imports(module: ast.Module) -> list[ImportInfo]:
+    """Extract module and symbol imports, including imports in nested scopes."""
+    imports: list[tuple[int, int, ImportInfo]] = []
+
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(
+                    (
+                        node.lineno,
+                        node.col_offset,
                         ImportInfo(
-                            module=_text(source, name_node),
-                            alias=(
-                                _text(source, alias_node)
-                                if alias_node is not None
-                                else None
-                            ),
+                            module=alias.name,
+                            alias=alias.asname,
                             kind="module",
-                            location=_location(child),
-                        )
+                            location=_location(node),
+                        ),
                     )
-
-                else:
-                    imports.append(
+                )
+        elif isinstance(node, ast.ImportFrom):
+            module_name = "." * node.level + (node.module or "")
+            for alias in node.names:
+                imports.append(
+                    (
+                        node.lineno,
+                        node.col_offset,
                         ImportInfo(
-                            module=_text(source, child),
-                            kind="module",
-                            location=_location(child),
-                        )
-                    )
-
-        elif node.type == "import_from_statement":
-            module_node = node.child_by_field_name("module_name")
-            module = _text(source, module_node) if module_node is not None else ""
-
-            for child in node.named_children:
-                if child == module_node:
-                    continue
-
-                if child.type in {"dotted_name", "identifier"}:
-                    imports.append(
-                        ImportInfo(
-                            module=module,
-                            symbol=_text(source, child),
+                            module=module_name,
+                            symbol=alias.name,
+                            alias=alias.asname,
                             kind="symbol",
                             location=_location(node),
-                        )
+                        ),
                     )
+                )
 
-                elif child.type == "aliased_import":
-                    name_node = child.named_children[0]
-                    alias_node = child.child_by_field_name("alias")
+    imports.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in imports]
 
-                    imports.append(
-                        ImportInfo(
-                            module=module,
-                            symbol=_text(source, name_node),
-                            alias=(
-                                _text(source, alias_node)
-                                if alias_node is not None
-                                else None
-                            ),
-                            kind="symbol",
-                            location=_location(node),
-                        )
-                    )
 
-        stack.extend(reversed(node.named_children))
+def _class_info(
+    source: str,
+    node: ast.ClassDef,
+    functions: list[FunctionInfo],
+) -> ClassInfo:
+    """Extract a class and its directly declared methods."""
+    methods: list[FunctionInfo] = []
 
-    return imports
+    for child in node.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            method = _function_info(source, child, parent_class=node.name)
+            methods.append(method)
+            _collect_nested_functions(
+                source,
+                child.body,
+                functions,
+                parent_scope=f"{node.name}.{method.name}",
+                parent_class=node.name,
+            )
+
+    return ClassInfo(
+        name=node.name,
+        methods=methods,
+        location=_location(node),
+        bases=[ast.unparse(base) for base in node.bases],
+        docstring=ast.get_docstring(node, clean=False),
+    )
 
 
 def parse_python(source_code: str, path: str = "<memory>") -> FileInfo:
-    """Parse Python source and return RepoX's common file model."""
-    source = source_code.encode("utf-8")
+    """Parse Python source into RepoX's language-independent file model.
 
-    parser = Parser(PYTHON_LANGUAGE)
-    tree = parser.parse(source)
-    root = tree.root_node
+    Python's standard-library AST owns all extraction. This avoids retaining or
+    dereferencing native Tree-sitter node wrappers during repository scans.
+    """
+    source_hash = sha256(source_code.encode("utf-8")).hexdigest()
 
-    parse_errors = _syntax_errors(root)
-    classes = []
-    functions = []
+    try:
+        module = ast.parse(source_code, filename=path, type_comments=True)
+    except (SyntaxError, ValueError) as exc:
+        line = getattr(exc, "lineno", None)
+        if line is None:
+            message = f"Python syntax error: {exc}"
+        else:
+            message = f"Syntax error near line {line}: {exc.msg}"
+        return FileInfo(
+            path=path,
+            language="python",
+            parse_errors=[message],
+            source_hash=source_hash,
+        )
 
-    for node in root.named_children:
-        if node.type == "function_definition":
-            function_info = _function_info(source, node)
-            functions.append(function_info)
+    classes: list[ClassInfo] = []
+    functions: list[FunctionInfo] = []
 
+    for node in module.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            info = _function_info(source_code, node)
+            functions.append(info)
             _collect_nested_functions(
-                source,
-                node,
+                source_code,
+                node.body,
                 functions,
-                parent_scope=function_info.name,
+                parent_scope=info.name,
             )
-
-        elif node.type == "class_definition":
-            name_node = node.child_by_field_name("name")
-            body_node = node.child_by_field_name("body")
-            class_name = _text(source, name_node)
-            methods = []
-
-            if body_node is not None:
-                for child in body_node.named_children:
-                    if child.type == "function_definition":
-                        method_info = _function_info(
-                            source,
-                            child,
-                            parent_class=class_name,
-                        )
-                        methods.append(method_info)
-
-                        _collect_nested_functions(
-                            source,
-                            child,
-                            functions,
-                            parent_scope=f"{class_name}.{method_info.name}",
-                            parent_class=class_name,
-                        )
-
-            superclasses_node = node.child_by_field_name("superclasses")
-
-            bases = (
-                [_text(source, child) for child in superclasses_node.named_children]
-                if superclasses_node is not None
-                else []
-            )
-
-            classes.append(
-                ClassInfo(
-                    name=class_name,
-                    methods=methods,
-                    location=_location(node),
-                    bases=bases,
-                    docstring=_docstring(source, body_node),
-                )
-            )
+        elif isinstance(node, ast.ClassDef):
+            classes.append(_class_info(source_code, node, functions))
 
     return FileInfo(
         path=path,
         language="python",
-        imports=_imports(source, root),
+        imports=_imports(module),
         classes=classes,
         functions=functions,
-        parse_errors=parse_errors,
+        parse_errors=[],
+        source_hash=source_hash,
     )

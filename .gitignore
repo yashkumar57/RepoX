@@ -3,9 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# Local project archives
-RepoX.zip
-RepoX_Day6_patch.zip
+# Local project archives and patch files
+*.zip
 
 # C extensions
 *.so

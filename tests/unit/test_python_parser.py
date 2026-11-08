@@ -1,3 +1,5 @@
+from hashlib import sha256
+
 from repox.parsers.python_parser import parse_python
 
 
@@ -216,3 +218,29 @@ from repox.helpers import calculate_total
     assert imported.symbol == "calculate_total"
     assert imported.alias is None
     assert imported.kind == "symbol"
+
+
+def test_parser_records_source_hash():
+    source = "def greet():\n    return 'hello'\n"
+    result = parse_python(source)
+
+    assert result.source_hash == sha256(source.encode("utf-8")).hexdigest()
+
+
+def test_parser_handles_repeated_parses_without_corrupting_locations():
+    source = """\
+def first():
+    return 1
+
+
+class Example:
+    def second(self):
+        return 2
+"""
+    for _ in range(10):
+        result = parse_python(source)
+        assert result.functions[0].location.start_line == 1
+        assert result.functions[0].location.end_line == 2
+        assert result.classes[0].location.start_line == 5
+        assert result.classes[0].methods[0].location.start_line == 6
+        assert result.classes[0].methods[0].location.end_line == 7

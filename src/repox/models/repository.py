@@ -69,6 +69,7 @@ class FileInfo:
     classes: list[ClassInfo] = field(default_factory=list)
     functions: list[FunctionInfo] = field(default_factory=list)
     parse_errors: list[str] = field(default_factory=list)
+    source_hash: str | None = None
 
 
 @dataclass
