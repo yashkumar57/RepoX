@@ -12,6 +12,9 @@ requires-python = ">=3.10"
 license = "MIT"
 dependencies = ["tree-sitter>=0.23", "tree-sitter-python>=0.23",]
 
+[project.scripts]
+repox = "repox.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6",]
 
