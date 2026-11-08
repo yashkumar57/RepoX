@@ -5,6 +5,7 @@ __pycache__/
 
 # Local project archives and patch files
 *.zip
+DAY8_GITIGNORE_ADDITION.txt
 
 # C extensions
 *.so
