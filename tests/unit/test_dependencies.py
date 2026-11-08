@@ -114,3 +114,49 @@ def test_resolves_dotted_imports(tmp_path):
     edges = {(r.source, r.target) for r in relationships}
 
     assert ("main.py", "app/routes.py") in edges
+
+
+def test_resolves_absolute_imports_in_src_layout(tmp_path):
+    src = tmp_path / "src"
+    app = src / "app"
+    app.mkdir(parents=True)
+
+    (app / "__init__.py").write_text("", encoding="utf-8")
+    (app / "services.py").write_text(
+        "def get_user():\n    return None\n",
+        encoding="utf-8",
+    )
+    (src / "main.py").write_text(
+        "from app.services import get_user\n",
+        encoding="utf-8",
+    )
+
+    scan_result = scan_repository(tmp_path)
+    relationships = resolve_dependencies(tmp_path, scan_result.files)
+
+    edges = {(r.source, r.target) for r in relationships}
+
+    assert ("src/main.py", "src/app/services.py") in edges
+
+
+def test_resolves_relative_imports_in_src_layout(tmp_path):
+    src = tmp_path / "src"
+    app = src / "app"
+    app.mkdir(parents=True)
+
+    (app / "__init__.py").write_text("", encoding="utf-8")
+    (app / "helpers.py").write_text(
+        "def help_user():\n    pass\n",
+        encoding="utf-8",
+    )
+    (app / "routes.py").write_text(
+        "from .helpers import help_user\n",
+        encoding="utf-8",
+    )
+
+    scan_result = scan_repository(tmp_path)
+    relationships = resolve_dependencies(tmp_path, scan_result.files)
+
+    edges = {(r.source, r.target) for r in relationships}
+
+    assert ("src/app/routes.py", "src/app/helpers.py") in edges

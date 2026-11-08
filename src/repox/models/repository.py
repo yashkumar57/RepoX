@@ -17,6 +17,21 @@ class ImportInfo:
     module: str
     symbol: str | None = None
     location: SourceLocation | None = None
+    alias: str | None = None
+    kind: Literal["module", "symbol"] | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize import metadata and preserve backward compatibility."""
+
+        if self.kind is None:
+            self.kind = "symbol" if self.symbol is not None else "module"
+
+        # Support the previous representation:
+        # ImportInfo(module="helpers", symbol="calculate_total as calculate")
+        if self.symbol and self.alias is None and " as " in self.symbol:
+            self.symbol, self.alias = self.symbol.split(" as ", maxsplit=1)
+            self.symbol = self.symbol.strip()
+            self.alias = self.alias.strip()
 
 
 @dataclass

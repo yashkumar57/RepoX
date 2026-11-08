@@ -123,9 +123,14 @@ def build_repository_graph(
             )
 
     # 4. Convert file-level dependency relationships into graph edges.
+
     for relationship in relationships:
-        source_id = f"file:{relationship.source}"
-        target_id = f"file:{relationship.target}"
+        if relationship.kind == "imports":
+            source_id = f"file:{relationship.source}"
+            target_id = f"file:{relationship.target}"
+        else:
+            source_id = relationship.source
+            target_id = relationship.target
 
         graph.add_edge(
             GraphEdge(

@@ -166,3 +166,53 @@ def outer():
         "middle": "outer",
         "inner": "outer.middle",
     }
+
+
+def test_parser_preserves_module_import_alias():
+    source = """\
+import repox.helpers as helpers
+import os
+"""
+
+    result = parse_python(source)
+
+    aliased_import = next(
+        item for item in result.imports if item.module == "repox.helpers"
+    )
+    regular_import = next(item for item in result.imports if item.module == "os")
+
+    assert aliased_import.kind == "module"
+    assert aliased_import.symbol is None
+    assert aliased_import.alias == "helpers"
+
+    assert regular_import.kind == "module"
+    assert regular_import.symbol is None
+    assert regular_import.alias is None
+
+
+def test_parser_preserves_imported_symbol_alias():
+    source = """\
+from repox.helpers import calculate_total as calculate
+"""
+
+    result = parse_python(source)
+    imported = result.imports[0]
+
+    assert imported.module == "repox.helpers"
+    assert imported.symbol == "calculate_total"
+    assert imported.alias == "calculate"
+    assert imported.kind == "symbol"
+
+
+def test_parser_preserves_unaliased_imported_symbol():
+    source = """\
+from repox.helpers import calculate_total
+"""
+
+    result = parse_python(source)
+    imported = result.imports[0]
+
+    assert imported.module == "repox.helpers"
+    assert imported.symbol == "calculate_total"
+    assert imported.alias is None
+    assert imported.kind == "symbol"

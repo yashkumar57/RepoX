@@ -184,7 +184,7 @@ def _collect_nested_functions(
 
 
 def _imports(source: bytes, root_node) -> list[ImportInfo]:
-    """Extract import statements from anywhere in a Python file."""
+    """Extract imports while preserving import type and aliases."""
     imports = []
     stack = [root_node]
 
@@ -200,18 +200,21 @@ def _imports(source: bytes, root_node) -> list[ImportInfo]:
                     imports.append(
                         ImportInfo(
                             module=_text(source, name_node),
-                            symbol=(
+                            alias=(
                                 _text(source, alias_node)
                                 if alias_node is not None
                                 else None
                             ),
+                            kind="module",
                             location=_location(child),
                         )
                     )
+
                 else:
                     imports.append(
                         ImportInfo(
                             module=_text(source, child),
+                            kind="module",
                             location=_location(child),
                         )
                     )
@@ -229,6 +232,7 @@ def _imports(source: bytes, root_node) -> list[ImportInfo]:
                         ImportInfo(
                             module=module,
                             symbol=_text(source, child),
+                            kind="symbol",
                             location=_location(node),
                         )
                     )
@@ -240,12 +244,13 @@ def _imports(source: bytes, root_node) -> list[ImportInfo]:
                     imports.append(
                         ImportInfo(
                             module=module,
-                            symbol=(
-                                f"{_text(source, name_node)} as "
-                                f"{_text(source, alias_node)}"
+                            symbol=_text(source, name_node),
+                            alias=(
+                                _text(source, alias_node)
                                 if alias_node is not None
-                                else _text(source, name_node)
+                                else None
                             ),
+                            kind="symbol",
                             location=_location(node),
                         )
                     )
