@@ -147,6 +147,7 @@ def process_user(user_id):
     assert outer.calls == ["normalize_user"]
     assert inner.calls == ["format_name"]
 
+
 def test_parser_extracts_deeply_nested_functions():
     source = """\
 def outer():
@@ -158,10 +159,7 @@ def outer():
 """
     result = parse_python(source)
 
-    nested = {
-        f.name: f.parent_scope
-        for f in result.functions
-    }
+    nested = {f.name: f.parent_scope for f in result.functions}
 
     assert nested == {
         "outer": None,

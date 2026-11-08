@@ -1,8 +1,46 @@
+"""Command-line interface for repository analysis."""
+
 import argparse
 from pathlib import Path
 
 from repox.analyzers.dependencies import resolve_dependencies
+from repox.analyzers.graph_builder import build_repository_graph
 from repox.scanner import scan_repository
+
+
+def _mermaid_label(node) -> str:
+    """Create a readable Mermaid label for a graph node."""
+    if node.kind == "file":
+        label = node.path
+    elif node.kind == "class":
+        label = f"class {node.name} ({node.path})"
+    else:
+        qualified_name = node.id.split(":", 2)[-1]
+        label = f"function {qualified_name}() ({node.path})"
+
+    return label.replace('"', "#quot;").replace("\n", "<br/>")
+
+
+def _print_mermaid(graph) -> None:
+    """Print the repository graph in Mermaid flowchart syntax."""
+    print("flowchart LR")
+
+    node_ids = {
+        node_id: f"node_{index}" for index, node_id in enumerate(sorted(graph.nodes))
+    }
+
+    for node_id in sorted(graph.nodes):
+        node = graph.nodes[node_id]
+        mermaid_id = node_ids[node_id]
+        label = _mermaid_label(node)
+
+        print(f'    {mermaid_id}["{label}"]')
+
+    for edge in graph.edges:
+        source = node_ids[edge.source]
+        target = node_ids[edge.target]
+
+        print(f"    {source} -->|{edge.kind}| {target}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -18,23 +56,18 @@ def main(argv: list[str] | None = None) -> None:
         default="text",
         help="Output format (default: text)",
     )
+
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
 
     scan_result = scan_repository(root)
     files = scan_result.files
+
     relationships = resolve_dependencies(root, files)
+    graph = build_repository_graph(files, relationships)
 
     if args.format == "mermaid":
-        print("flowchart LR")
-        node_ids = {path: f"file_{index}" for index, path in enumerate(sorted(files))}
-        for path, node_id in node_ids.items():
-            print(f'    {node_id}["{path}"]')
-        for relationship in relationships:
-            source = node_ids.get(relationship.source)
-            target = node_ids.get(relationship.target)
-            if source and target:
-                print(f"    {source} --> {target}")
+        _print_mermaid(graph)
 
         if scan_result.errors:
             print()
@@ -58,9 +91,12 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Functions and methods: {function_count}")
     print(f"Import statements/symbols detected: {import_count}")
     print(f"Local file dependencies: {len(relationships)}")
+    print(f"Graph nodes: {len(graph.nodes)}")
+    print(f"Graph edges: {len(graph.edges)}")
 
     error_count = sum(len(file.parse_errors) for file in files.values())
     files_with_errors_count = sum(bool(file.parse_errors) for file in files.values())
+
     print(f"Files with parse errors: {files_with_errors_count}")
     print(f"Parse errors detected: {error_count}")
 
@@ -77,6 +113,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  {relationship.source} -> {relationship.target}")
 
     files_with_errors = [file for file in files.values() if file.parse_errors]
+
     if files_with_errors:
         print("\nParse errors:")
         for file in files_with_errors:
@@ -87,3 +124,7 @@ def main(argv: list[str] | None = None) -> None:
         print("\nScan errors:")
         for error in scan_result.errors:
             print(f"  {error.path}: {error.message}")
+
+
+if __name__ == "__main__":
+    main()
