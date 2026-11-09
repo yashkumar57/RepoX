@@ -45,7 +45,7 @@ class CodeRankEmbedder:
         self.model_name = model_name
         self.batch_size = batch_size
         self.normalize_embeddings = normalize_embeddings
-        self.dimension = self._model.get_sentence_embedding_dimension()
+        self.dimension = self._model.get_embedding_dimension()
         self.max_seq_length = self._model.max_seq_length
 
     def _validate_input_lengths(self, texts: Sequence[str]) -> None:

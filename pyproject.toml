@@ -23,6 +23,7 @@ embeddings = [
     "einops",
 ]
 vector-store = ["chromadb>=1.5,<2.0"]
+llm = ["openai>=1.50,<3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

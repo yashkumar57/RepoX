@@ -167,3 +167,111 @@ provider message framing also consume tokens.
 The prompt explicitly treats retrieved source as untrusted evidence, requires
 source-grounded claims, and asks the model to cite exact paths and inclusive line
 ranges. No LLM SDK or provider is installed or invoked in this layer.
+
+## Day 11: Local-first repository question answering
+
+Day 11 connects hybrid retrieval and bounded RAG context to a language model.
+`RepositoryQAService` orchestrates retrieval, context construction, prompt
+assembly, generation, and citation validation through the provider-neutral
+`ChatModel` protocol.
+
+### Default path: free local inference with Ollama
+
+RepoX uses Ollama as its recommended local inference backend. Ollama runs the
+model on the developer's own computer, so this path requires no paid API, API
+key, or hosted inference account. The Python adapter uses the standard library
+and adds no Python dependency. Install Ollama separately, then download a model
+once:
+
+```powershell
+ollama pull qwen2.5-coder:3b
+```
+
+Ollama's desktop application normally keeps its local service available. If
+the service is not running, start it in a separate terminal:
+
+```powershell
+ollama serve
+```
+
+The model name is configurable. Developers can use any model already available
+in their Ollama installation. Smaller models generally need less memory but
+may produce weaker code explanations. Ollama can use CPU inference and can use
+supported GPUs automatically; actual speed depends on hardware, model size,
+quantization, and available memory.
+
+After creating `analysis`, `store`, and `provider` as shown in Days 8–9, use:
+
+```python
+from repox.llm import OllamaChatModel
+from repox.query import RepositoryQAService, RepositoryRetrievalService
+from repox.indexing.search import SemanticSearchService
+
+retrieval = RepositoryRetrievalService(
+    analysis,
+    SemanticSearchService(store, provider),
+)
+qa = RepositoryQAService(
+    retrieval,
+    OllamaChatModel(model="qwen2.5-coder:3b"),
+)
+
+result = qa.ask(
+    "Where are incoming HTTP requests parsed?",
+    top_k=5,
+    context_limit=10,
+    token_budget=2_500,
+    max_output_tokens=600,
+)
+print(result.answer)
+print("Citation repair attempted:", result.citation_retry_used)
+for citation in result.citations:
+    print(f"{citation.file_path}:{citation.start_line}-{citation.end_line}")
+if result.invalid_citations:
+    print("Unverified model citations:", result.invalid_citations)
+```
+
+If Ollama is unavailable, the adapter reports a connection error when a
+question is asked. Repository parsing, deterministic analysis, embedding,
+indexing, and semantic retrieval remain independent of the LLM server.
+
+### Optional hosted provider: OpenAI
+
+Developers who explicitly want hosted inference can retain the optional OpenAI
+adapter. It is not required for the local-first setup:
+
+```powershell
+python -m pip install -e ".[llm]"
+$env:OPENAI_API_KEY = "your-api-key"
+```
+
+Then replace `OllamaChatModel(...)` with
+`OpenAIChatModel(model="gpt-4o-mini")`. This optional path may incur API costs.
+
+### Citation validation
+
+The prompt requires concise answers with inline citations for repository-
+specific factual claims. Each evidence item exposes its repository-relative
+path, inclusive line range, and a ready-to-copy citation string. The model is
+instructed to copy that complete citation verbatim rather than calculate a new
+line range.
+
+The service independently validates every citation against the exact source
+chunks supplied to the model. If the first response omits valid citations or
+contains unsupported citation locations, RepoX makes one focused repair
+attempt that asks the model to rewrite the draft using only the supplied
+citations and evidence. The repaired response is retained only when it improves
+the citation-validation result; otherwise the original response is preserved.
+The service never manufactures citations in application code. The
+`citation_retry_used` field indicates whether the repair attempt ran.
+
+Valid citations are returned as structured `AnswerCitation` records; unknown
+paths or out-of-range line spans are reported separately in
+`invalid_citations`. Citation validation confirms source-location membership,
+not semantic truth: it does not prove that every sentence is supported by the
+cited code. An answer with no accepted citations remains explicitly uncited.
+
+The provider adapter is deliberately replaceable. Implement `ChatModel` to use
+another local or hosted model without changing retrieval, context selection,
+or citation validation. Provider calls occur only when the application invokes
+`RepositoryQAService.ask()`.

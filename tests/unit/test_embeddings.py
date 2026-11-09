@@ -94,7 +94,7 @@ def test_code_rank_embedder_uses_document_and_query_encoding(monkeypatch):
         def __getitem__(self, index):
             return FakeTransformer()
 
-        def get_sentence_embedding_dimension(self):
+        def get_embedding_dimension(self):
             return 3
 
         def encode(self, inputs, **kwargs):
@@ -135,7 +135,7 @@ def test_code_rank_embedder_rejects_empty_query(monkeypatch):
     class FakeModel:
         max_seq_length = 8192
 
-        def get_sentence_embedding_dimension(self):
+        def get_embedding_dimension(self):
             return 3
 
     module = ModuleType("sentence_transformers")
@@ -161,7 +161,7 @@ def test_code_rank_embedder_rejects_inputs_over_model_limit(monkeypatch):
         def __getitem__(self, index):
             return FakeTransformer()
 
-        def get_sentence_embedding_dimension(self):
+        def get_embedding_dimension(self):
             return 3
 
     module = ModuleType("sentence_transformers")

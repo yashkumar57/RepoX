@@ -122,9 +122,12 @@ class RAGContextBuilder:
             sections.append("No repository evidence was retrieved.")
         for index, source in enumerate(sources, start=1):
             metadata = [
+                f"Evidence ID: {index}",
+                f"Source path: {source.file_path}",
+                f"Source lines: {source.start_line}-{source.end_line} (inclusive)",
                 (
-                    f"Source: [{index}] {source.file_path}:"
-                    f"{source.start_line}-{source.end_line}"
+                    f"Valid citation for this evidence: "
+                    f"[{source.file_path}:{source.start_line}-{source.end_line}]"
                 ),
                 f"Symbol: {source.symbol_name} ({source.kind})",
                 f"Relevance: {source.relevance}",
