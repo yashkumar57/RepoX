@@ -74,3 +74,53 @@ inclusive line range, symbol identity, and structural metadata.
 
 The index can always be rebuilt from repository source. Do not commit `.repox/`
 contents or treat the vector database as the source of truth.
+
+
+## Day 9: Hybrid repository retrieval
+
+Day 9 adds a retrieval layer that combines semantic matches with deterministic
+relationships from the repository graph. Semantic search chooses the primary
+code matches; graph traversal adds one-hop context such as callers, callees,
+containing scopes, child symbols, imports, dependents, and inheritance links.
+
+```python
+from pathlib import Path
+
+from repox.analyzers.repository_analyzer import analyze_repository
+from repox.embeddings.code_rank import CodeRankEmbedder
+from repox.indexing.search import SemanticSearchService
+from repox.query.retrieval import RepositoryRetrievalService
+from repox.vector_store.chroma import ChromaVectorStore
+
+root = Path(".").resolve()
+analysis = analyze_repository(root)
+provider = CodeRankEmbedder()
+store = ChromaVectorStore.for_repository(root)
+
+retrieval = RepositoryRetrievalService(
+    analysis,
+    SemanticSearchService(store, provider),
+)
+response = retrieval.retrieve(
+    "Where is the HTTP request handled?",
+    top_k=5,
+    context_limit=10,
+)
+
+for item in response.results:
+    chunk = item.chunk
+    if item.is_semantic_match:
+        print(f"SEMANTIC {item.semantic_score:.4f}", end=" ")
+    else:
+        print(f"CONTEXT {','.join(item.relationships)}", end=" ")
+    print(f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}")
+    print(chunk.content)
+```
+
+The response keeps semantic scores separate from structural context. A graph
+neighbor is not assigned an invented similarity score. Every returned item
+contains exact source text, a repository-relative path, inclusive line numbers,
+and (for structural context) the graph relationship and its source evidence.
+Duplicate chunks reached through multiple graph paths are merged. The
+`context_limit` controls the maximum number of additional unique context
+chunks; it does not reduce the requested semantic `top_k`.
