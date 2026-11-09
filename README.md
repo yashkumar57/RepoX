@@ -124,3 +124,46 @@ and (for structural context) the graph relationship and its source evidence.
 Duplicate chunks reached through multiple graph paths are merged. The
 `context_limit` controls the maximum number of additional unique context
 chunks; it does not reduce the requested semantic `top_k`.
+
+## Day 10: RAG context construction
+
+Day 10 turns hybrid retrieval results into a bounded, source-attributed context
+package. Retrieval and context construction remain separate: the retrieval layer
+finds evidence, while the context builder selects what fits the configured
+budget. Semantic matches are prioritized by score; structural context follows
+with deterministic relationship priority. Chunks are included whole or omitted
+so source code and line ranges are never silently truncated.
+
+```python
+from repox.context import PromptBuilder, RAGContextBuilder
+
+retrieved = retrieval.retrieve(
+    "Where is the HTTP request handled?",
+    top_k=5,
+    context_limit=10,
+)
+context = RAGContextBuilder().build(retrieved, token_budget=6_000)
+prompt = PromptBuilder().build(context)
+
+print(context.estimated_tokens, context.token_budget)
+for source in context.sources:
+    print(source.file_path, source.start_line, source.end_line)
+
+# Provider adapters can pass these two strings to their chat-completion API.
+messages = [
+    {"role": "system", "content": prompt.system_prompt},
+    {"role": "user", "content": prompt.user_prompt},
+]
+```
+
+`ApproximateTokenCounter` provides a dependency-free estimate based on UTF-8
+byte length. It is useful for development and conservative budgeting, but it is
+not an exact model tokenizer. For strict context-window limits, inject the
+selected LLM's tokenizer by implementing the small `TokenCounter.count(text)`
+interface. The context budget applies to the rendered evidence package; the
+final prompt's estimated token count is reported separately because system and
+provider message framing also consume tokens.
+
+The prompt explicitly treats retrieved source as untrusted evidence, requires
+source-grounded claims, and asks the model to cite exact paths and inclusive line
+ranges. No LLM SDK or provider is installed or invoked in this layer.
