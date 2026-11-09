@@ -25,7 +25,7 @@ class CodeRankEmbedder:
         self,
         model_name: str = MODEL_NAME,
         device: str | None = None,
-        batch_size: int = 16,
+        batch_size: int = 4,
         normalize_embeddings: bool = True,
     ) -> None:
         if batch_size < 1:

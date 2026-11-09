@@ -44,6 +44,18 @@ class RepositoryQAService:
             query, top_k=top_k, context_limit=context_limit
         )
         context = self.context_builder.build(retrieval, token_budget=token_budget)
+        if not context.sources:
+            return RepositoryAnswer(
+                query=query,
+                answer=(
+                    "No relevant repository evidence was retrieved. Verify that "
+                    "the repository has been indexed and try a more specific query."
+                ),
+                model=self.model.model_name,
+                citations=(),
+                invalid_citations=(),
+                context=context,
+            )
         prompt = self.prompt_builder.build(context)
         answer_text = self.model.generate(
             prompt.system_prompt,

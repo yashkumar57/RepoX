@@ -199,3 +199,40 @@ def test_indexer_does_not_prune_records_when_repository_scan_has_errors(tmp_path
         indexer.index(analyze_repository(root))
 
     assert store.hashes == previous
+
+
+def test_indexer_persists_changed_chunks_in_bounded_batches(tmp_path):
+    root = _repository(tmp_path)
+    provider = FakeProvider()
+    store = FakeStore()
+    report = RepositoryIndexer(store, provider, batch_size=1).index(
+        analyze_repository(root)
+    )
+
+    assert report.embedded_chunks == report.total_chunks
+    assert len(provider.document_calls) == report.total_chunks
+    assert all(len(batch) == 1 for batch in provider.document_calls)
+    assert len(store.chunks) == report.total_chunks
+
+
+def test_indexer_does_not_delete_stale_records_if_a_batch_fails(tmp_path):
+    root = _repository(tmp_path)
+    store = FakeStore()
+    RepositoryIndexer(store, FakeProvider()).index(analyze_repository(root))
+    previous_hashes = dict(store.hashes)
+
+    (root / "other.py").write_text("VALUE = 42\\n", encoding="utf-8")
+    (root / "example.py").write_text(
+        "def calculate(value):\\n    return value + 2\\n", encoding="utf-8"
+    )
+
+    class FailingProvider(FakeProvider):
+        def embed_documents(self, texts):
+            raise RuntimeError("simulated embedding failure")
+
+    with pytest.raises(RuntimeError, match="simulated embedding failure"):
+        RepositoryIndexer(store, FailingProvider(), batch_size=1).index(
+            analyze_repository(root)
+        )
+
+    assert all(chunk_id in store.hashes for chunk_id in previous_hashes)

@@ -289,3 +289,20 @@ def test_ollama_adapter_rejects_empty_model_response(monkeypatch):
 
     with pytest.raises(RuntimeError, match="empty response"):
         model.generate("system", "user")
+
+
+def test_repository_qa_does_not_generate_without_retrieved_evidence():
+    empty_retrieval = RetrievalResponse(
+        query="question",
+        results=(),
+        semantic_match_count=0,
+        structural_context_count=0,
+    )
+    retrieval = StubRetrieval(empty_retrieval)
+    model = StubModel("This must not be generated.")
+
+    result = RepositoryQAService(retrieval, model).ask("question")
+
+    assert "No relevant repository evidence" in result.answer
+    assert result.citations == ()
+    assert model.calls == []

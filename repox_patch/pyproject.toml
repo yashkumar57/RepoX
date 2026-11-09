@@ -1,0 +1,41 @@
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repox"
+version = "0.1.0"
+description = "An open-source repository intelligence platform."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[project.scripts]
+repox = "repox.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "httpx>=0.27,<1.0"]
+api = ["fastapi>=0.115,<1.0", "uvicorn[standard]>=0.30,<1.0"]
+embeddings = [
+    "sentence-transformers==5.7.0",
+    "transformers==4.57.6",
+    "einops",
+]
+vector-store = ["chromadb>=1.5,<2.0"]
+llm = ["openai>=1.50,<3.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

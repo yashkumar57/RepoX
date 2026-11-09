@@ -3,6 +3,7 @@
 from collections import defaultdict
 from pathlib import PurePosixPath
 
+from repox.models.identifiers import class_node_ids, function_node_ids
 from repox.models.repository import (
     FileInfo,
     FunctionInfo,
@@ -340,6 +341,8 @@ def resolve_symbols(files: dict[str, FileInfo]) -> list[Relationship]:
     for path, file_info in files.items():
         imported_symbols = _imported_symbols(file_info)
         imported_modules = _imported_modules(file_info)
+        local_function_ids = function_node_ids(path, file_info)
+        local_class_ids = class_node_ids(path, file_info)
 
         functions = list(file_info.functions)
 
@@ -347,8 +350,7 @@ def resolve_symbols(files: dict[str, FileInfo]) -> list[Relationship]:
             functions.extend(class_info.methods)
 
         for function in functions:
-            source_name = _qualified_function_name(function)
-            source_id = _function_id(path, source_name)
+            source_id = local_function_ids[id(function)]
 
             for call in function.calls:
                 target = _resolve_function(
@@ -363,8 +365,11 @@ def resolve_symbols(files: dict[str, FileInfo]) -> list[Relationship]:
                 if target is None:
                     continue
 
-                target_path, target_name, _ = target
-                target_id = _function_id(target_path, target_name)
+                target_path, target_name, target_function = target
+                target_file = files[target_path]
+                target_id = function_node_ids(target_path, target_file)[
+                    id(target_function)
+                ]
 
                 key = (source_id, target_id, "calls")
 
@@ -380,7 +385,7 @@ def resolve_symbols(files: dict[str, FileInfo]) -> list[Relationship]:
                     )
 
         for class_info in file_info.classes:
-            source_id = _class_id(path, class_info.name)
+            source_id = local_class_ids[id(class_info)]
 
             for base in class_info.bases:
                 target = _resolve_base_class(
@@ -396,7 +401,9 @@ def resolve_symbols(files: dict[str, FileInfo]) -> list[Relationship]:
                     continue
 
                 target_path, target_class = target
-                target_id = _class_id(target_path, target_class.name)
+                target_id = class_node_ids(target_path, files[target_path])[
+                    id(target_class)
+                ]
 
                 key = (source_id, target_id, "inherits")
 

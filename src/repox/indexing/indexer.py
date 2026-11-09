@@ -29,15 +29,24 @@ def chunk_content_hash(chunk: CodeChunk) -> str:
 class RepositoryIndexer:
     """Synchronize a deterministic repository analysis into a vector store."""
 
-    def __init__(self, store: VectorStore, provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        store: VectorStore,
+        provider: EmbeddingProvider,
+        batch_size: int = 8,
+    ) -> None:
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
         self.store = store
         self.provider = provider
+        self.batch_size = batch_size
 
     def index(self, analysis: RepositoryAnalysis) -> IndexingReport:
         """Index all current chunks, reusing unchanged vectors and pruning stale IDs.
 
-        Embeddings are generated before stale records are deleted. If chunking or
-        embedding fails, the existing index is left intact.
+        Changed chunks are embedded and persisted in bounded batches to avoid
+        retaining every embedding vector in memory. Stale records are deleted
+        only after all changed batches have been processed successfully.
         """
         if analysis.scan_errors:
             paths = ", ".join(error.path for error in analysis.scan_errors[:5])
@@ -60,16 +69,23 @@ class RepositoryIndexer:
             chunk for chunk in chunks if existing.get(chunk.id) != hashes[chunk.id]
         ]
 
-        embedded = embed_chunks(changed_chunks, self.provider)
-        if embedded:
-            actual_dimension = len(embedded[0].vector)
+        embedded_count = 0
+        for start in range(0, len(changed_chunks), self.batch_size):
+            batch = changed_chunks[start : start + self.batch_size]
+            embedded_batch = embed_chunks(batch, self.provider)
+            if not embedded_batch:
+                continue
+            actual_dimension = len(embedded_batch[0].vector)
             self.store.configure(self.provider.model_name, actual_dimension)
-            self.store.upsert(embedded, hashes)
+            self.store.upsert(embedded_batch, hashes)
+            embedded_count += len(embedded_batch)
+            del embedded_batch
+
         self.store.delete(stale_ids)
 
         return IndexingReport(
             total_chunks=len(chunks),
-            embedded_chunks=len(embedded),
-            reused_chunks=len(chunks) - len(embedded),
+            embedded_chunks=embedded_count,
+            reused_chunks=len(chunks) - embedded_count,
             deleted_chunks=len(stale_ids),
         )

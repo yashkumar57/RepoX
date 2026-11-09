@@ -372,3 +372,70 @@ request reuses unchanged vectors.
 The embedding model and vector store are initialized only when this endpoint
 is first called. API startup and `/health` do not load the model. Install both
 optional dependency groups before requesting indexing.
+
+## Day 13: Repository search and question-answering API
+
+Day 13 adds source-grounded search and repository Q&A endpoints. The API reuses
+RepoX's semantic search, hybrid retrieval, context construction, and citation
+validation layers rather than introducing separate implementations.
+
+### Search indexed code
+
+```http
+POST /repositories/{repository_id}/search
+Content-Type: application/json
+```
+
+```json
+{
+  "query": "Where is the application configured?",
+  "top_k": 5
+}
+```
+
+The response includes the matched source content, file path, language, symbol,
+line range, cosine similarity score, and distance. `top_k` is bounded from 1 to
+50. An empty vector index returns an empty result list.
+
+### Ask a repository question
+
+```http
+POST /repositories/{repository_id}/ask
+Content-Type: application/json
+```
+
+```json
+{
+  "query": "How does the application register its routes?",
+  "top_k": 5,
+  "context_limit": 10,
+  "token_budget": 6000,
+  "max_output_tokens": 1000
+}
+```
+
+The response includes the answer, model identifier, validated source citations,
+invalid citation strings, citation-retry status, and fail-closed fallback
+metadata. If retrieval returns no evidence, RepoX returns a deterministic
+no-evidence response without asking the model to invent an answer.
+
+The default Q&A adapter uses the locally running Ollama service and the
+configured `qwen2.5-coder:3b` model. Search and Q&A services are created lazily
+and cached per repository in the API process. API startup and `/health` do not
+load embedding models, open ChromaDB, or contact Ollama.
+
+### Error behavior
+
+- `200`: search or Q&A request completed.
+- `404`: repository ID is not present in the managed workspace.
+- `422`: invalid request parameters or query.
+- `503`: required optional dependency or local inference service is unavailable.
+
+Install the API, embedding, and vector-store extras before using the complete
+search/indexing pipeline:
+
+```powershell
+python -m pip install -e ".[api,dev,embeddings,vector-store]"
+```
+
+Start the API and open `http://127.0.0.1:8000/docs` to exercise all endpoints.

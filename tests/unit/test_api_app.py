@@ -245,3 +245,198 @@ def test_index_repository_maps_scan_or_index_validation_error_to_422() -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"] == "scan failed"
+
+
+def test_search_repository_returns_source_grounded_results() -> None:
+    from types import SimpleNamespace
+
+    from repox.models.chunk import CodeChunk
+    from repox.models.search import SearchResult
+
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = _checkout()
+    match = SearchResult(
+        chunk=CodeChunk(
+            id="chunk-1",
+            file_path="src/app.py",
+            language="python",
+            kind="function",
+            symbol_id="symbol-1",
+            symbol_name="create_app",
+            start_line=10,
+            end_line=20,
+            content="def create_app():\n    return app",
+        ),
+        score=0.91,
+        distance=0.09,
+    )
+    semantic_search = Mock()
+    semantic_search.search.return_value = [match]
+    retrieval = SimpleNamespace(semantic_search=semantic_search)
+    qa = Mock()
+    factory = Mock(return_value=(retrieval, qa))
+    client = TestClient(
+        create_app(
+            repository_service=repository_service,
+            query_service_factory=factory,
+        )
+    )
+
+    response = client.post(
+        f"/repositories/{'a' * 32}/search",
+        json={"query": "where is the app created", "top_k": 3},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["repository_id"] == "a" * 32
+    assert body["result_count"] == 1
+    assert body["results"][0] == {
+        "file_path": "src/app.py",
+        "language": "python",
+        "kind": "function",
+        "symbol_id": "symbol-1",
+        "symbol_name": "create_app",
+        "start_line": 10,
+        "end_line": 20,
+        "content": "def create_app():\n    return app",
+        "score": 0.91,
+        "distance": 0.09,
+    }
+    semantic_search.search.assert_called_once_with("where is the app created", top_k=3)
+
+
+def test_search_repository_validates_request_and_unknown_repository() -> None:
+    repository_service = Mock()
+    client = TestClient(create_app(repository_service=repository_service))
+
+    invalid = client.post(
+        f"/repositories/{'a' * 32}/search", json={"query": "", "top_k": 0}
+    )
+    assert invalid.status_code == 422
+
+    from repox.ingestion import RepositoryNotFoundError
+
+    repository_service.get_checkout.side_effect = RepositoryNotFoundError(
+        "Repository not found"
+    )
+    missing = client.post(
+        f"/repositories/{'a' * 32}/search", json={"query": "find routes"}
+    )
+    assert missing.status_code == 404
+
+
+def test_ask_repository_returns_answer_and_citation_metadata() -> None:
+    from types import SimpleNamespace
+
+    from repox.models.answer import AnswerCitation
+
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = _checkout()
+    answer = SimpleNamespace(
+        query="How does routing work?",
+        answer="Routes are registered in create_app. [src/app.py:10-20]",
+        model="test-model",
+        citations=(
+            AnswerCitation(
+                source_id="source-1",
+                file_path="src/app.py",
+                start_line=10,
+                end_line=20,
+            ),
+        ),
+        invalid_citations=(),
+        citation_retry_used=True,
+        citation_fallback_used=False,
+        uncited_draft=None,
+    )
+    qa = Mock()
+    qa.ask.return_value = answer
+    retrieval = Mock()
+    factory = Mock(return_value=(retrieval, qa))
+    client = TestClient(
+        create_app(
+            repository_service=repository_service,
+            query_service_factory=factory,
+        )
+    )
+
+    response = client.post(
+        f"/repositories/{'a' * 32}/ask",
+        json={"query": "How does routing work?", "top_k": 4},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "repository_id": "a" * 32,
+        "query": "How does routing work?",
+        "answer": "Routes are registered in create_app. [src/app.py:10-20]",
+        "model": "test-model",
+        "citations": [
+            {
+                "source_id": "source-1",
+                "file_path": "src/app.py",
+                "start_line": 10,
+                "end_line": 20,
+            }
+        ],
+        "invalid_citations": [],
+        "citation_retry_used": True,
+        "citation_fallback_used": False,
+        "uncited_draft": None,
+    }
+    qa.ask.assert_called_once_with(
+        "How does routing work?",
+        top_k=4,
+        context_limit=10,
+        token_budget=6000,
+        max_output_tokens=1000,
+    )
+
+
+def test_ask_repository_maps_model_unavailable_to_503() -> None:
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = _checkout()
+    qa = Mock()
+    qa.ask.side_effect = RuntimeError("Could not connect to Ollama")
+    factory = Mock(return_value=(Mock(), qa))
+    client = TestClient(
+        create_app(
+            repository_service=repository_service,
+            query_service_factory=factory,
+        )
+    )
+
+    response = client.post(
+        f"/repositories/{'a' * 32}/ask", json={"query": "Explain indexing"}
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Could not connect to Ollama"
+
+
+def test_query_service_factory_is_cached_per_repository() -> None:
+    from types import SimpleNamespace
+
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = _checkout()
+    semantic_search = Mock()
+    semantic_search.search.return_value = []
+    retrieval = SimpleNamespace(semantic_search=semantic_search)
+    factory = Mock(return_value=(retrieval, Mock()))
+    client = TestClient(
+        create_app(
+            repository_service=repository_service,
+            query_service_factory=factory,
+        )
+    )
+
+    first = client.post(
+        f"/repositories/{'a' * 32}/search", json={"query": "first query"}
+    )
+    second = client.post(
+        f"/repositories/{'a' * 32}/search", json={"query": "second query"}
+    )
+
+    assert first.status_code == second.status_code == 200
+    factory.assert_called_once_with(_checkout().path)

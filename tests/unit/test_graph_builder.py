@@ -189,3 +189,39 @@ def test_built_graph_passes_validation():
     graph = build_repository_graph(files, relationships)
 
     assert graph.validate() == []
+
+
+def test_duplicate_method_definitions_get_distinct_graph_nodes():
+    first = FunctionInfo(
+        name="__init__",
+        parent_class="Serializer",
+        location=SourceLocation(start_line=10, end_line=12),
+    )
+    second = FunctionInfo(
+        name="__init__",
+        parent_class="Serializer",
+        location=SourceLocation(start_line=20, end_line=22),
+    )
+    files = {
+        "serializer.py": FileInfo(
+            path="serializer.py",
+            language="python",
+            classes=[
+                ClassInfo(
+                    name="Serializer",
+                    methods=[first, second],
+                    location=SourceLocation(start_line=1, end_line=22),
+                )
+            ],
+        )
+    }
+
+    graph = build_repository_graph(files, [])
+
+    first_id = "function:serializer.py:Serializer.__init__@10:12"
+    second_id = "function:serializer.py:Serializer.__init__@20:22"
+    assert first_id in graph.nodes
+    assert second_id in graph.nodes
+    assert graph.nodes[first_id].location == first.location
+    assert graph.nodes[second_id].location == second.location
+    assert graph.validate() == []
