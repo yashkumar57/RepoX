@@ -275,3 +275,100 @@ The provider adapter is deliberately replaceable. Implement `ChatModel` to use
 another local or hosted model without changing retrieval, context selection,
 or citation validation. Provider calls occur only when the application invokes
 `RepositoryQAService.ask()`.
+
+## Day 12: FastAPI backend foundation
+
+The HTTP layer is an optional dependency and does not load embedding models,
+connect to Ollama, or open a vector index when the application starts. This
+keeps API startup lightweight and makes the application factory straightforward
+to test.
+
+Install the API and development dependencies:
+
+```powershell
+python -m pip install -e ".[api,dev]"
+```
+
+Start the development server from the repository root:
+
+```powershell
+python -m uvicorn repox.api.app:app --reload
+```
+
+The liveness endpoint is available at `http://127.0.0.1:8000/health`;
+interactive API documentation is available at `/docs`. The health endpoint
+checks only that the API process is responsive. It does not claim that an
+embedding model, vector store, or Ollama is ready.
+
+### Acquire a public GitHub repository
+
+The API accepts a public GitHub repository URL and an optional branch. The
+repository is cloned into the managed workspace at `~/.repox/repositories/` by
+default. The checkout path remains server-side; the response exposes a stable
+RepoX repository ID and repository metadata.
+
+```powershell
+$body = @{
+    repository_url = "https://github.com/pallets/itsdangerous"
+    branch = "main"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://127.0.0.1:8000/repositories" `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+A successful acquisition returns HTTP `201 Created`. Invalid repository URLs
+or branch names return `422`; Git clone failures return `502`. Acquisition does
+not yet run repository analysis or semantic indexing. Those operations will be
+exposed separately so that cloning, deterministic analysis, and model-backed
+indexing remain independent stages.
+
+## Day 12: GitHub acquisition and indexing API
+
+Install the API and indexing dependencies:
+
+```powershell
+python -m pip install -e ".[api,embeddings,vector-store]"
+```
+
+Start the service:
+
+```powershell
+uvicorn repox.api.app:app --reload
+```
+
+Open `http://127.0.0.1:8000/docs` to use the interactive API documentation.
+
+### Acquire a repository
+
+`POST /repositories` accepts a public GitHub HTTPS URL and an optional branch:
+
+```json
+{
+  "repository_url": "https://github.com/pallets/itsdangerous",
+  "branch": "main"
+}
+```
+
+The response contains a managed `repository_id` and repository metadata. The
+local checkout path is deliberately not exposed.
+
+### Analyze and index the acquired repository
+
+Pass the returned ID to `POST /repositories/{repository_id}/index`:
+
+```text
+POST /repositories/<repository_id>/index
+```
+
+The endpoint runs RepoX's deterministic Python repository analysis, then
+synchronizes the persistent ChromaDB index under the checkout's `.repox/index/`
+directory. The response reports analyzed files, relationships, total chunks,
+newly embedded chunks, reused chunks, and deleted stale chunks. Repeating the
+request reuses unchanged vectors.
+
+The embedding model and vector store are initialized only when this endpoint
+is first called. API startup and `/health` do not load the model. Install both
+optional dependency groups before requesting indexing.
