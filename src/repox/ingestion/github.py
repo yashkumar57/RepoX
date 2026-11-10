@@ -184,6 +184,25 @@ class GitHubRepositoryService:
             path=path,
         )
 
+    def list_checkouts(self) -> list[RepositoryCheckout]:
+        """Discover valid checkouts already present in the managed workspace."""
+        if not self.workspace.exists():
+            return []
+        checkouts: list[RepositoryCheckout] = []
+        candidates = sorted(
+            self.workspace.iterdir(), key=lambda item: item.stat().st_mtime
+        )
+        for candidate in candidates:
+            if not candidate.is_dir() or not re.fullmatch(
+                r"[a-f0-9]{32}", candidate.name
+            ):
+                continue
+            try:
+                checkouts.append(self.get_checkout(candidate.name))
+            except RepositoryNotFoundError:
+                continue
+        return checkouts
+
     def clone(
         self,
         repository_url: str,

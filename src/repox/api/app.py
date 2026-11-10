@@ -5,8 +5,10 @@ from pathlib import Path
 from threading import Lock
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from repox.api.persistence import RepositoryMetadataStore
 from repox.api.schemas import (
     AnswerCitationResponse,
     RepositoryAskRequest,
@@ -14,6 +16,7 @@ from repox.api.schemas import (
     RepositoryCreateRequest,
     RepositoryCreateResponse,
     RepositoryIndexResponse,
+    RepositoryRecordResponse,
     RepositorySearchRequest,
     RepositorySearchResponse,
     RepositorySearchResult,
@@ -37,6 +40,7 @@ def create_app(
     repository_service: GitHubRepositoryService | None = None,
     indexing_service_factory: Callable[[Path], object] | None = None,
     query_service_factory: Callable[[Path], tuple[object, object]] | None = None,
+    metadata_store_path: str | Path | None = None,
 ) -> FastAPI:
     """Create the API application without loading models or opening indexes.
 
@@ -47,7 +51,70 @@ def create_app(
         description="HTTP interface for repository intelligence services.",
         version="0.1.0",
     )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type"],
+    )
     app.state.repository_service = repository_service or GitHubRepositoryService()
+    if metadata_store_path is not None:
+        database_path = metadata_store_path
+    elif isinstance(app.state.repository_service, GitHubRepositoryService):
+        database_path = app.state.repository_service.workspace.parent / "repox.sqlite3"
+    else:
+        database_path = ":memory:"
+    app.state.metadata_store = RepositoryMetadataStore(database_path)
+
+    # Import checkouts created before SQLite persistence was introduced.
+    if isinstance(app.state.repository_service, GitHubRepositoryService):
+        for checkout in app.state.repository_service.list_checkouts():
+            app.state.metadata_store.upsert_repository(
+                {
+                    "repository_id": checkout.repository_id,
+                    "owner": checkout.owner,
+                    "name": checkout.name,
+                    "url": checkout.url,
+                    "branch": checkout.branch,
+                }
+            )
+            # Recover a legacy index's basic real metrics without re-embedding.
+            index_path = checkout.path / ".repox" / "index"
+            if (
+                index_path.is_dir()
+                and app.state.metadata_store.get_repository(checkout.repository_id)[
+                    "index_result"
+                ]
+                is None
+            ):
+                try:
+                    from repox.analyzers.repository_analyzer import analyze_repository
+                    from repox.vector_store.chroma import ChromaVectorStore
+
+                    store = ChromaVectorStore.for_repository(checkout.path)
+                    embedded_count = store.count
+                    if embedded_count:
+                        analysis = analyze_repository(checkout.path)
+                        app.state.metadata_store.save_index_result(
+                            checkout.repository_id,
+                            RepositoryIndexResponse(
+                                repository_id=checkout.repository_id,
+                                analyzed_files=len(analysis.files),
+                                relationships=len(analysis.relationships),
+                                total_chunks=embedded_count,
+                                embedded_chunks=embedded_count,
+                                reused_chunks=0,
+                                deleted_chunks=0,
+                            ).model_dump(),
+                        )
+                except Exception:
+                    # The checkout remains available even if an old index cannot
+                    # be inspected in this environment.
+                    pass
     app.state.indexing_service_factory = indexing_service_factory
     app.state.indexing_services = {}
     app.state.indexing_locks = {}
@@ -59,6 +126,47 @@ def create_app(
     def health() -> HealthResponse:
         """Report that the API process is alive."""
         return HealthResponse(status="ok", service="repox-api")
+
+    @app.get(
+        "/repositories",
+        response_model=list[RepositoryRecordResponse],
+        tags=["repositories"],
+        summary="List acquired repositories and their latest indexing results",
+    )
+    def list_repositories() -> list[RepositoryRecordResponse]:
+        """Return repositories persisted by this RepoX workspace."""
+        return [
+            RepositoryRecordResponse(**record)
+            for record in app.state.metadata_store.list_repositories()
+        ]
+
+    @app.get(
+        "/repositories/{repository_id}",
+        response_model=RepositoryRecordResponse,
+        tags=["repositories"],
+        summary="Get a repository and its latest indexing result",
+    )
+    def get_repository(repository_id: str) -> RepositoryRecordResponse:
+        """Return persisted metadata for one managed repository."""
+        try:
+            checkout = app.state.repository_service.get_checkout(repository_id)
+        except RepositoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        app.state.metadata_store.upsert_repository(
+            {
+                "repository_id": checkout.repository_id,
+                "owner": checkout.owner,
+                "name": checkout.name,
+                "url": checkout.url,
+                "branch": checkout.branch,
+            }
+        )
+        record = app.state.metadata_store.get_repository(repository_id)
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail="Repository metadata not found."
+            )
+        return RepositoryRecordResponse(**record)
 
     @app.post(
         "/repositories",
@@ -87,6 +195,16 @@ def create_app(
                 detail=f"Repository acquisition failed: {exc}",
             ) from exc
 
+        app.state.metadata_store.upsert_repository(
+            {
+                "repository_id": checkout.repository_id,
+                "owner": checkout.owner,
+                "name": checkout.name,
+                "url": checkout.url,
+                "branch": checkout.branch,
+            }
+        )
+
         return RepositoryCreateResponse(
             repository_id=checkout.repository_id,
             owner=checkout.owner,
@@ -110,6 +228,15 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
             ) from exc
+        app.state.metadata_store.upsert_repository(
+            {
+                "repository_id": checkout.repository_id,
+                "owner": checkout.owner,
+                "name": checkout.name,
+                "url": checkout.url,
+                "branch": checkout.branch,
+            }
+        )
 
         lock = app.state.indexing_locks.setdefault(repository_id, Lock())
         if not lock.acquire(blocking=False):
@@ -156,7 +283,7 @@ def create_app(
             lock.release()
 
         report = result.report
-        return RepositoryIndexResponse(
+        response = RepositoryIndexResponse(
             repository_id=repository_id,
             analyzed_files=result.analyzed_files,
             relationships=result.relationships,
@@ -165,6 +292,8 @@ def create_app(
             reused_chunks=report.reused_chunks,
             deleted_chunks=report.deleted_chunks,
         )
+        app.state.metadata_store.save_index_result(repository_id, response.model_dump())
+        return response
 
     def get_query_services(repository_id: str, repository_path: Path):
         """Build and cache repository retrieval and QA services on demand."""

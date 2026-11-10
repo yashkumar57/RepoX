@@ -53,6 +53,11 @@ class ChromaVectorStore:
         identity = sha256(str(root).casefold().encode("utf-8")).hexdigest()[:16]
         return cls(storage_path, collection_name=f"repo_{identity}")
 
+    @property
+    def count(self) -> int:
+        """Return the number of vectors currently persisted in this collection."""
+        return int(self._collection.count())
+
     def configure(self, model_name: str, dimension: int | None = None) -> None:
         """Prevent incompatible embedding models or dimensions being mixed."""
         if not model_name.strip():

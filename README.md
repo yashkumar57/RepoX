@@ -439,3 +439,61 @@ python -m pip install -e ".[api,dev,embeddings,vector-store]"
 ```
 
 Start the API and open `http://127.0.0.1:8000/docs` to exercise all endpoints.
+
+## Day 15: Frontend and FastAPI integration
+
+The Next.js frontend uses a typed API client in `frontend/lib/api.ts` for
+repository acquisition and indexing. Configure the browser-visible backend URL
+by copying `frontend/.env.example` to `frontend/.env.local` and setting
+`NEXT_PUBLIC_REPOX_API_URL` (default: `http://127.0.0.1:8000`). Restart the
+Next.js development server after changing this value.
+
+The FastAPI service allows the local Next.js origins `http://localhost:3000`
+and `http://127.0.0.1:3000` through CORS. Start the backend from the repository
+root:
+
+```powershell
+python -m uvicorn repox.api.app:app --reload
+```
+
+In a second terminal, start the frontend:
+
+```powershell
+cd frontend
+pnpm install
+Copy-Item .env.example .env.local
+pnpm dev
+```
+
+Use **Add repository** to submit a public GitHub URL. RepoX first calls
+`POST /repositories`; after cloning succeeds, **Start indexing** calls
+`POST /repositories/{repository_id}/index`. The onboarding screen and overview
+render the actual indexing response fields. API errors, connection failures,
+and in-progress states are shown inline.
+
+## Day 15: Frontend integration and persistent workspace
+
+The FastAPI service exposes repository acquisition and indexing to the Next.js
+frontend. Configure the frontend API origin in `frontend/.env.local`:
+
+```env
+NEXT_PUBLIC_REPOX_API_URL=http://127.0.0.1:8000
+```
+
+The repository API includes:
+
+- `POST /repositories` — clone a public GitHub repository.
+- `POST /repositories/{repository_id}/index` — analyze and semantically index it.
+- `GET /repositories` — list saved repositories and their latest indexing results.
+- `GET /repositories/{repository_id}` — retrieve one saved repository record.
+
+Repository metadata and indexing summaries are stored in SQLite at
+`~/.repox/repox.sqlite3` (Windows: `%USERPROFILE%\.repox\repox.sqlite3`). Git
+checkouts remain under `~/.repox/repositories/`; ChromaDB vectors remain under
+each checkout's `.repox/index/`. Existing valid checkouts are discovered and
+registered when the API starts, so an existing workspace can be restored after
+upgrading without cloning it again.
+
+The frontend loads the saved repository list on startup and restores the most
+recently updated repository. The backend is the source of truth; React state is
+only the current presentation state.

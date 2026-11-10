@@ -27,6 +27,23 @@ def _checkout() -> RepositoryCheckout:
     )
 
 
+def test_cors_allows_local_nextjs_development_origin() -> None:
+    client = TestClient(create_app())
+
+    response = client.options(
+        "/repositories",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
 def test_health_endpoint_reports_service_liveness() -> None:
     client = TestClient(create_app())
 
@@ -45,7 +62,9 @@ def test_openapi_schema_is_available_and_documents_repository_route() -> None:
     schema = response.json()
     assert "/health" in schema["paths"]
     assert "/repositories" in schema["paths"]
+    assert "get" in schema["paths"]["/repositories"]
     assert "post" in schema["paths"]["/repositories"]
+    assert "get" in schema["paths"]["/repositories/{repository_id}"]
     assert "/repositories/{repository_id}/index" in schema["paths"]
     assert "post" in schema["paths"]["/repositories/{repository_id}/index"]
 
@@ -440,3 +459,51 @@ def test_query_service_factory_is_cached_per_repository() -> None:
 
     assert first.status_code == second.status_code == 200
     factory.assert_called_once_with(_checkout().path)
+
+
+def test_repository_metadata_and_index_result_survive_app_restart(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "repox.sqlite3"
+    checkout = _checkout()
+    repository_service = Mock()
+    repository_service.clone.return_value = checkout
+    repository_service.get_checkout.return_value = checkout
+    indexing_service = Mock()
+    indexing_service.index.return_value = RepositoryIndexResult(
+        report=IndexingReport(12, 10, 2, 1), analyzed_files=7, relationships=9
+    )
+
+    first_client = TestClient(
+        create_app(
+            repository_service=repository_service,
+            indexing_service_factory=Mock(return_value=indexing_service),
+            metadata_store_path=database,
+        )
+    )
+    created = first_client.post(
+        "/repositories",
+        json={
+            "repository_url": "https://github.com/pallets/itsdangerous",
+            "branch": "main",
+        },
+    )
+    assert created.status_code == 201
+    indexed = first_client.post(f"/repositories/{checkout.repository_id}/index")
+    assert indexed.status_code == 200
+
+    # A new FastAPI application instance reads the same on-disk metadata.
+    restarted_client = TestClient(
+        create_app(repository_service=repository_service, metadata_store_path=database)
+    )
+    listed = restarted_client.get("/repositories")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    record = listed.json()[0]
+    assert record["repository_id"] == checkout.repository_id
+    assert record["status"] == "indexed"
+    assert record["index_result"] == indexed.json()
+
+    fetched = restarted_client.get(f"/repositories/{checkout.repository_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["index_result"] == indexed.json()

@@ -48,6 +48,20 @@ class RepositoryIndexResponse(BaseModel):
     deleted_chunks: int
 
 
+class RepositoryRecordResponse(BaseModel):
+    """Persisted repository metadata and its latest indexing summary."""
+
+    repository_id: str
+    owner: str
+    name: str
+    url: str
+    branch: str | None
+    status: str
+    index_result: RepositoryIndexResponse | None = None
+    created_at: str
+    updated_at: str
+
+
 class RepositorySearchRequest(BaseModel):
     """A semantic repository search request."""
 
