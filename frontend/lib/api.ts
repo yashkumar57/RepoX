@@ -99,3 +99,46 @@ export function indexRepository(
 export function getApiBaseUrl(): string {
   return API_BASE_URL
 }
+
+
+export interface RepositoryGraphNode {
+  id: string
+  name: string
+  kind: 'file' | 'class' | 'function' | string
+  path: string
+  language: string
+  start_line: number | null
+  end_line: number | null
+}
+
+export interface RepositoryGraphEdge {
+  source: string
+  target: string
+  kind: string
+  evidence: string | null
+}
+
+export interface RepositoryGraphResponse {
+  repository_id: string
+  summary: {
+    files: number
+    symbols: number
+    classes: number
+    functions: number
+    relationships: number
+    parse_errors: number
+    scan_errors: number
+    languages: Record<string, number>
+    relationship_kinds: Record<string, number>
+  }
+  nodes: RepositoryGraphNode[]
+  edges: RepositoryGraphEdge[]
+}
+
+export function getRepositoryGraph(
+  repositoryId: string,
+): Promise<RepositoryGraphResponse> {
+  return request<RepositoryGraphResponse>(
+    `/repositories/${encodeURIComponent(repositoryId)}/graph`,
+  )
+}

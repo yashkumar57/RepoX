@@ -507,3 +507,23 @@ def test_repository_metadata_and_index_result_survive_app_restart(
     fetched = restarted_client.get(f"/repositories/{checkout.repository_id}")
     assert fetched.status_code == 200
     assert fetched.json()["index_result"] == indexed.json()
+
+
+def test_repository_graph_endpoint_returns_visualization_data(tmp_path) -> None:
+    from dataclasses import replace
+
+    checkout = replace(_checkout(), path=tmp_path)
+    (tmp_path / "app.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = checkout
+    client = TestClient(create_app(repository_service=repository_service))
+
+    response = client.get(f"/repositories/{checkout.repository_id}/graph")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["files"] == 1
+    assert body["summary"]["functions"] == 1
+    assert body["summary"]["languages"] == {"python": 1}
+    assert any(node["name"] == "run" for node in body["nodes"])
+    assert body["edges"]

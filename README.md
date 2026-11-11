@@ -497,3 +497,37 @@ upgrading without cloning it again.
 The frontend loads the saved repository list on startup and restores the most
 recently updated repository. The backend is the source of truth; React state is
 only the current presentation state.
+
+
+## Day 16: Language adapters and repository graph visualization
+
+RepoX separates language-specific source understanding from shared repository
+intelligence services. A `LanguageAdapter` parses a supported source file and
+resolves language-specific imports and symbol references into normalized
+repository records. `LanguageRegistry` selects the adapter by file extension.
+
+Python is the reference adapter and the only enabled adapter in the default
+registry at this milestone. The standard-library AST parser and existing Python
+resolvers are preserved behind `PythonLanguageAdapter`. The shared graph,
+semantic chunking, embedding, vector indexing, retrieval, context construction
+and RAG services continue to consume normalized records.
+
+Embedding and LLM providers remain independent interfaces. Implementations of
+`EmbeddingProvider` generate document/query vectors; implementations of
+`ChatModel` generate responses. Language adapters do not select or depend on a
+specific embedding or chat provider.
+
+### Repository graph API
+
+After connecting a repository, request:
+
+```http
+GET /repositories/{repository_id}/graph
+```
+
+The response contains aggregate file/symbol/relationship metrics, graph nodes
+with language and source locations, and directed edges with relationship kinds
+and evidence. The endpoint runs deterministic analysis only and does not load
+embedding or LLM models. The frontend Code Graph view uses this endpoint rather
+than placeholder graph data. The current UI limits its rendered graph to 60
+nodes for responsiveness; the API returns the complete graph.

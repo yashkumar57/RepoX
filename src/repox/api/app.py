@@ -15,6 +15,7 @@ from repox.api.schemas import (
     RepositoryAskResponse,
     RepositoryCreateRequest,
     RepositoryCreateResponse,
+    RepositoryGraphResponse,
     RepositoryIndexResponse,
     RepositoryRecordResponse,
     RepositorySearchRequest,
@@ -339,6 +340,22 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
             ) from exc
+
+    @app.get(
+        "/repositories/{repository_id}/graph",
+        response_model=RepositoryGraphResponse,
+        tags=["repositories"],
+        summary="Get source-located repository graph and visualization metrics",
+    )
+    def get_repository_graph(repository_id: str) -> RepositoryGraphResponse:
+        """Return deterministic graph data without loading embedding or LLM models."""
+        repository_path = resolve_repository(repository_id)
+        from repox.analyzers.repository_analyzer import analyze_repository
+        from repox.visualization.repository import build_repository_visualization
+
+        analysis = analyze_repository(repository_path)
+        projection = build_repository_visualization(analysis)
+        return RepositoryGraphResponse(repository_id=repository_id, **projection)
 
     @app.post(
         "/repositories/{repository_id}/search",

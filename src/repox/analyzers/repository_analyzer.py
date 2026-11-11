@@ -1,10 +1,9 @@
-"""Coordinate deterministic analysis of a Python repository."""
+"""Coordinate language adapters and the shared repository analysis pipeline."""
 
 from pathlib import Path
 
-from repox.analyzers.dependencies import resolve_dependencies
 from repox.analyzers.graph_builder import build_repository_graph
-from repox.analyzers.symbol_resolver import resolve_symbols
+from repox.languages.registry import LanguageRegistry, default_language_registry
 from repox.models.analysis import RepositoryAnalysis
 from repox.models.repository import Relationship
 from repox.scanner import scan_repository
@@ -15,31 +14,40 @@ def _deduplicate_relationships(
 ) -> list[Relationship]:
     """Keep one relationship per source, target, and kind."""
     unique: dict[tuple[str, str, str], Relationship] = {}
-
     for relationship in relationships:
-        key = (
-            relationship.source,
-            relationship.target,
-            relationship.kind,
-        )
+        key = (relationship.source, relationship.target, relationship.kind)
         unique.setdefault(key, relationship)
-
     return list(unique.values())
 
 
-def analyze_repository(root: str | Path) -> RepositoryAnalysis:
-    """Run scanning, relationship resolution, and graph construction.
+def analyze_repository(
+    root: str | Path,
+    registry: LanguageRegistry | None = None,
+) -> RepositoryAnalysis:
+    """Run adapter-owned parsing/resolution and shared graph construction.
 
-    The pipeline deliberately performs deterministic source analysis only.
-    Embedding generation and LLM-based reasoning belong to later layers.
+    Each registered adapter owns syntax and language semantics. Normalized
+    ``FileInfo`` and ``Relationship`` records then flow through the same graph,
+    chunking, embedding, vector indexing and retrieval pipeline.
     """
     repository_root = Path(root).resolve()
-    scan_result = scan_repository(repository_root)
+    language_registry = registry or default_language_registry()
+    scan_result = scan_repository(repository_root, language_registry)
     files = scan_result.files
 
-    import_relationships = resolve_dependencies(repository_root, files)
-    symbol_relationships = resolve_symbols(files)
+    import_relationships: list[Relationship] = []
+    symbol_relationships: list[Relationship] = []
+    adapters = {}
+    for info in files.values():
+        adapter = language_registry.get(info.language)
+        adapters[adapter.language] = adapter
+    for language in sorted(adapters):
+        adapter = adapters[language]
+        import_relationships.extend(adapter.resolve_imports(repository_root, files))
+        symbol_relationships.extend(adapter.resolve_symbols(files))
 
+    import_relationships = _deduplicate_relationships(import_relationships)
+    symbol_relationships = _deduplicate_relationships(symbol_relationships)
     relationships = _deduplicate_relationships(
         import_relationships + symbol_relationships
     )

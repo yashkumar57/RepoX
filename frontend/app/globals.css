@@ -51,3 +51,10 @@ button:disabled { cursor: not-allowed; opacity: .65; }
   font-size: 0.8rem;
 }
 .result-metrics strong { color: var(--foreground, inherit); }
+
+
+/* Day 16: live graph visualization */
+.edges line { stroke: color-mix(in srgb, var(--muted) 58%, transparent); stroke-width: .22; }
+.graph-limit-note { padding: 0 16px 12px; font-size: 11px; }
+.graph-node { max-width: 150px; min-width: 92px; }
+.graph-node span:not(.node-symbol) { overflow-wrap: anywhere; }

@@ -128,3 +128,47 @@ class RepositoryAskResponse(BaseModel):
     citation_retry_used: bool
     citation_fallback_used: bool
     uncited_draft: str | None = None
+
+
+class RepositoryGraphNodeResponse(BaseModel):
+    """One source-located node in the repository visualization graph."""
+
+    id: str
+    name: str
+    kind: str
+    path: str
+    language: str
+    start_line: int | None = None
+    end_line: int | None = None
+
+
+class RepositoryGraphEdgeResponse(BaseModel):
+    """A directed, evidence-bearing repository relationship."""
+
+    source: str
+    target: str
+    kind: str
+    evidence: str | None = None
+
+
+class RepositoryGraphSummaryResponse(BaseModel):
+    """Aggregate values suitable for repository overview visualizations."""
+
+    files: int
+    symbols: int
+    classes: int
+    functions: int
+    relationships: int
+    parse_errors: int
+    scan_errors: int
+    languages: dict[str, int]
+    relationship_kinds: dict[str, int]
+
+
+class RepositoryGraphResponse(BaseModel):
+    """Language-neutral graph projection for interactive clients."""
+
+    repository_id: str
+    summary: RepositoryGraphSummaryResponse
+    nodes: list[RepositoryGraphNodeResponse]
+    edges: list[RepositoryGraphEdgeResponse]
