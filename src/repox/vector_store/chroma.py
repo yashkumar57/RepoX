@@ -59,7 +59,13 @@ class ChromaVectorStore:
         return int(self._collection.count())
 
     def configure(self, model_name: str, dimension: int | None = None) -> None:
-        """Prevent incompatible embedding models or dimensions being mixed."""
+        """Validate compatibility without initializing empty collection metadata."""
+        self._validate_configuration(model_name, dimension)
+
+    def _validate_configuration(
+        self, model_name: str, dimension: int | None = None
+    ) -> None:
+        """Reject model or dimension changes for an initialized collection."""
         if not model_name.strip():
             raise ValueError("model_name must not be empty")
         if dimension is not None and dimension < 1:
@@ -68,6 +74,11 @@ class ChromaVectorStore:
         metadata = dict(self._collection.metadata or {})
         stored_model = metadata.get("embedding_model")
         stored_dimension = metadata.get("embedding_dimension")
+        if self.count and (stored_model is None or stored_dimension is None):
+            raise ValueError(
+                "The existing ChromaDB collection has vectors without embedding "
+                "configuration. Rebuild the index before using it."
+            )
         if stored_model is not None and stored_model != model_name:
             raise ValueError(
                 "The existing ChromaDB collection uses embedding model "
@@ -84,16 +95,14 @@ class ChromaVectorStore:
                 f"{stored_dimension}, not {dimension}. Rebuild the index."
             )
 
-        # ChromaDB treats ``hnsw:space`` as an immutable collection
-        # configuration value. It is accepted when the collection is created,
-        # but passing it back to Collection.modify() raises ValueError even
-        # when the value is unchanged. Keep it out of metadata updates; the
-        # cosine distance configuration remains attached to the collection.
+    def _persist_configuration(self, model_name: str, dimension: int) -> None:
+        """Persist configuration immediately before the first successful write."""
+        metadata = dict(self._collection.metadata or {})
+        # ChromaDB treats ``hnsw:space`` as an immutable collection setting.
         updated = dict(metadata)
         updated.pop("hnsw:space", None)
         updated["embedding_model"] = model_name
-        if dimension is not None:
-            updated["embedding_dimension"] = dimension
+        updated["embedding_dimension"] = dimension
         if updated != metadata:
             self._collection.modify(metadata=updated)
 
@@ -134,6 +143,7 @@ class ChromaVectorStore:
         model_name = next(iter(model_names))
         dimension = next(iter(dimensions))
         self.configure(model_name, dimension)
+        self._persist_configuration(model_name, dimension)
 
         metadatas = []
         for item in chunks:

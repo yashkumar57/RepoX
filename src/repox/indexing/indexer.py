@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from hashlib import sha256
 
-from repox.chunking.semantic_chunker import chunk_repository
+from repox.chunking.semantic_chunker import chunk_repository, subdivide_chunks
 from repox.embeddings.base import EmbeddingProvider
 from repox.embeddings.service import embed_chunks
 from repox.models.analysis import RepositoryAnalysis
@@ -44,9 +44,9 @@ class RepositoryIndexer:
     def index(self, analysis: RepositoryAnalysis) -> IndexingReport:
         """Index all current chunks, reusing unchanged vectors and pruning stale IDs.
 
-        Changed chunks are embedded and persisted in bounded batches to avoid
-        retaining every embedding vector in memory. Stale records are deleted
-        only after all changed batches have been processed successfully.
+        All changed chunks are embedded before the store is mutated. This keeps
+        a failed embedding batch from leaving a mixture of old and new vectors.
+        Stale records are deleted only after successful upserts.
         """
         if analysis.scan_errors:
             paths = ", ".join(error.path for error in analysis.scan_errors[:5])
@@ -58,6 +58,15 @@ class RepositoryIndexer:
             )
 
         chunks = chunk_repository(analysis)
+        max_tokens = getattr(self.provider, "max_input_tokens", None)
+        count_tokens = getattr(self.provider, "count_tokens", None)
+        has_token_limit = isinstance(max_tokens, int) and not isinstance(
+            max_tokens, bool
+        )
+        if has_token_limit and callable(count_tokens):
+            chunks = subdivide_chunks(
+                chunks, max_tokens=max_tokens, count_tokens=count_tokens
+            )
         hashes = {chunk.id: chunk_content_hash(chunk) for chunk in chunks}
         dimension = getattr(self.provider, "dimension", None)
         self.store.configure(self.provider.model_name, dimension)
@@ -69,17 +78,20 @@ class RepositoryIndexer:
             chunk for chunk in chunks if existing.get(chunk.id) != hashes[chunk.id]
         ]
 
-        embedded_count = 0
+        pending_batches = []
         for start in range(0, len(changed_chunks), self.batch_size):
             batch = changed_chunks[start : start + self.batch_size]
             embedded_batch = embed_chunks(batch, self.provider)
             if not embedded_batch:
                 continue
+            pending_batches.append(embedded_batch)
+
+        embedded_count = 0
+        for embedded_batch in pending_batches:
             actual_dimension = len(embedded_batch[0].vector)
             self.store.configure(self.provider.model_name, actual_dimension)
             self.store.upsert(embedded_batch, hashes)
             embedded_count += len(embedded_batch)
-            del embedded_batch
 
         self.store.delete(stale_ids)
 

@@ -50,13 +50,10 @@ class CodeRankEmbedder:
 
     def _validate_input_lengths(self, texts: Sequence[str]) -> None:
         """Reject inputs that would be silently truncated by the model."""
-        transformer = self._model[0]
-        tokenizer = transformer.tokenizer
         for batch_start in range(0, len(texts), self.batch_size):
             batch = list(texts[batch_start : batch_start + self.batch_size])
-            encoded = tokenizer(batch, padding=False, truncation=False)
-            lengths = [len(token_ids) for token_ids in encoded["input_ids"]]
-            for offset, token_count in enumerate(lengths):
+            for offset, text in enumerate(batch):
+                token_count = self.count_tokens(text)
                 if token_count > self.max_seq_length:
                     index = batch_start + offset
                     raise ValueError(
@@ -64,6 +61,17 @@ class CodeRankEmbedder:
                         f"the model limit is {self.max_seq_length}. Split the "
                         "source chunk before embedding."
                     )
+
+    @property
+    def max_input_tokens(self) -> int:
+        """Expose the exact document token limit to the indexing pipeline."""
+        return self.max_seq_length
+
+    def count_tokens(self, text: str) -> int:
+        """Count provider tokenizer tokens without truncation."""
+        transformer = self._model[0]
+        encoded = transformer.tokenizer([text], padding=False, truncation=False)
+        return len(encoded["input_ids"][0])
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed source chunks as retrieval passages."""

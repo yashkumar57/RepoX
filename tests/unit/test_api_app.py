@@ -10,6 +10,7 @@ from repox.api.app import create_app
 from repox.indexing.indexer import IndexingReport
 from repox.indexing.service import RepositoryIndexResult
 from repox.ingestion import (
+    GitHubRepositoryService,
     InvalidRepositoryURLError,
     RepositoryCheckout,
     RepositoryCloneError,
@@ -51,6 +52,23 @@ def test_health_endpoint_reports_service_liveness() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "repox-api"}
+
+
+def test_app_creation_and_health_do_not_discover_checkouts(
+    tmp_path, monkeypatch
+) -> None:
+    service = GitHubRepositoryService(workspace=tmp_path / "repositories")
+    discover = Mock(side_effect=AssertionError("checkout discovery during startup"))
+    monkeypatch.setattr(service, "list_checkouts", discover)
+
+    app = create_app(
+        repository_service=service,
+        metadata_store_path=tmp_path / "repox.sqlite3",
+    )
+    health = next(route.endpoint for route in app.routes if route.path == "/health")
+
+    assert health().status == "ok"
+    discover.assert_not_called()
 
 
 def test_openapi_schema_is_available_and_documents_repository_route() -> None:
@@ -527,3 +545,54 @@ def test_repository_graph_endpoint_returns_visualization_data(tmp_path) -> None:
     assert body["summary"]["languages"] == {"python": 1}
     assert any(node["name"] == "run" for node in body["nodes"])
     assert body["edges"]
+
+
+def test_debug_endpoint_returns_parsed_traceback_and_repository_answer() -> None:
+    from types import SimpleNamespace
+
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = _checkout()
+    qa = Mock()
+    qa.ask.return_value = SimpleNamespace(
+        answer="The failing lookup may receive an empty sequence.",
+        model="test-model",
+        citations=(),
+        citation_fallback_used=False,
+    )
+    factory = Mock(return_value=(Mock(), qa))
+    client = TestClient(
+        create_app(repository_service=repository_service, query_service_factory=factory)
+    )
+
+    response = client.post(
+        f"/repositories/{'a' * 32}/debug",
+        json={
+            "description": "The request fails for empty input.",
+            "traceback": (
+                "Traceback (most recent call last):\n"
+                '  File "src/service.py", line 31, in process\n'
+                "IndexError: list index out of range"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["exception_type"] == "IndexError"
+    assert body["exception_message"] == "list index out of range"
+    assert body["frames"] == [
+        {"path": "src/service.py", "line": 31, "function": "process"}
+    ]
+    assert body["innermost_frame"] == body["frames"][0]
+    assert body["answer"] == "The failing lookup may receive an empty sequence."
+    assert "src/service.py:31 in process" in qa.ask.call_args.args[0]
+
+
+def test_debug_endpoint_rejects_empty_bug_report() -> None:
+    repository_service = Mock()
+    repository_service.get_checkout.return_value = _checkout()
+    client = TestClient(create_app(repository_service=repository_service))
+
+    response = client.post(f"/repositories/{'a' * 32}/debug", json={})
+
+    assert response.status_code == 422

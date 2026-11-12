@@ -214,6 +214,14 @@ class GitHubRepositoryService:
         branch = _validate_branch(branch)
 
         self.workspace.mkdir(parents=True, exist_ok=True)
+        # Reuse an existing checkout for the same repository instead of creating
+        # a new workspace ID every time the user submits the same GitHub URL.
+        for existing in self.list_checkouts():
+            if existing.url.casefold() != normalized_url.casefold():
+                continue
+            if branch is None or existing.branch == branch:
+                return existing
+
         workspace = self.workspace.resolve()
         repository_id = uuid.uuid4().hex
         destination = workspace / repository_id

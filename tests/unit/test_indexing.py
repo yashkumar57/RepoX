@@ -236,3 +236,58 @@ def test_indexer_does_not_delete_stale_records_if_a_batch_fails(tmp_path):
         )
 
     assert all(chunk_id in store.hashes for chunk_id in previous_hashes)
+
+
+def test_indexer_does_not_upsert_any_batch_when_later_embedding_fails(tmp_path):
+    root = _repository(tmp_path)
+    store = FakeStore()
+    RepositoryIndexer(store, FakeProvider()).index(analyze_repository(root))
+    previous_hashes = dict(store.hashes)
+    previous_chunks = dict(store.chunks)
+
+    (root / "example.py").write_text(
+        "def calculate(value):\n    return value + 2\n", encoding="utf-8"
+    )
+    (root / "other.py").write_text("VALUE = 42\n", encoding="utf-8")
+
+    class FailingSecondBatchProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def embed_documents(self, texts):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("simulated later embedding failure")
+            return super().embed_documents(texts)
+
+    with pytest.raises(RuntimeError, match="later embedding failure"):
+        RepositoryIndexer(store, FailingSecondBatchProvider(), batch_size=1).index(
+            analyze_repository(root)
+        )
+
+    assert store.hashes == previous_hashes
+    assert store.chunks == previous_chunks
+
+
+def test_indexer_splits_large_symbols_when_provider_exposes_token_limit(tmp_path):
+    root = tmp_path / "sample"
+    root.mkdir()
+    (root / "example.py").write_text(
+        "def long_running(value):\n"
+        + "".join(f"    value += {number}\n" for number in range(8))
+        + "    return value\n",
+        encoding="utf-8",
+    )
+    provider = FakeProvider()
+    provider.max_input_tokens = 25
+    provider.count_tokens = lambda text: len(text.split())
+
+    report = RepositoryIndexer(FakeStore(), provider).index(analyze_repository(root))
+
+    embedded_texts = [text for batch in provider.document_calls for text in batch]
+    assert report.total_chunks > 1
+    assert all(
+        provider.count_tokens(text) <= provider.max_input_tokens
+        for text in embedded_texts
+    )

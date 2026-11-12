@@ -130,3 +130,30 @@ def test_retrieval_returns_empty_response_when_semantic_search_has_no_matches(
     assert response.results == ()
     assert response.semantic_match_count == 0
     assert response.structural_context_count == 0
+
+
+def test_retrieval_adds_context_for_a_duplicate_definition(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "example.py").write_text(
+        "class Duplicate:\n"
+        "    def run(self):\n"
+        "        return 1\n\n"
+        "class Duplicate:\n"
+        "    def run(self):\n"
+        "        return 2\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_repository(root)
+    method = next(
+        chunk
+        for chunk in chunk_repository(analysis)
+        if chunk.kind == "function" and chunk.start_line == 6
+    )
+    response = RepositoryRetrievalService(
+        analysis, FakeSemanticSearch([SearchResult(method, score=0.9, distance=0.1)])
+    ).retrieve("second duplicate", context_limit=5)
+
+    parent = next(item for item in response.results if item.chunk.id != method.id)
+    assert parent.chunk.symbol_id == method.parent_symbol_id
+    assert "parent" in parent.relationships

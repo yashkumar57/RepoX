@@ -142,3 +142,97 @@ export function getRepositoryGraph(
     `/repositories/${encodeURIComponent(repositoryId)}/graph`,
   )
 }
+
+
+export interface DebugTracebackFrame {
+  path: string
+  line: number
+  function: string
+}
+
+export interface RepositoryDebugResponse {
+  repository_id: string
+  description: string
+  exception_type: string | null
+  exception_message: string | null
+  frames: DebugTracebackFrame[]
+  innermost_frame: DebugTracebackFrame | null
+  answer: string
+  model: string
+  citations: { source_id: string; file_path: string; start_line: number; end_line: number }[]
+  citation_fallback_used: boolean
+}
+
+export function debugRepository(
+  repositoryId: string,
+  payload: { description?: string; traceback?: string },
+): Promise<RepositoryDebugResponse> {
+  return request<RepositoryDebugResponse>(
+    `/repositories/${encodeURIComponent(repositoryId)}/debug`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+
+export interface RepositorySearchResult {
+  file_path: string
+  language: string
+  kind: string
+  symbol_id: string
+  symbol_name: string
+  start_line: number
+  end_line: number
+  content: string
+  score: number
+  distance: number
+}
+
+export interface RepositorySearchResponse {
+  repository_id: string
+  query: string
+  result_count: number
+  results: RepositorySearchResult[]
+}
+
+export interface RepositoryAskResponse {
+  repository_id: string
+  query: string
+  answer: string
+  model: string
+  citations: {
+    source_id: string
+    file_path: string
+    start_line: number
+    end_line: number
+  }[]
+  invalid_citations: string[]
+  citation_retry_used: boolean
+  citation_fallback_used: boolean
+  uncited_draft: string | null
+}
+
+export function searchRepository(
+  repositoryId: string,
+  payload: { query: string; top_k?: number },
+): Promise<RepositorySearchResponse> {
+  return request<RepositorySearchResponse>(
+    `/repositories/${encodeURIComponent(repositoryId)}/search`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+export function askRepository(
+  repositoryId: string,
+  payload: {
+    query: string
+    top_k?: number
+    context_limit?: number
+    token_budget?: number
+    max_output_tokens?: number
+  },
+): Promise<RepositoryAskResponse> {
+  return request<RepositoryAskResponse>(
+    `/repositories/${encodeURIComponent(repositoryId)}/ask`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}

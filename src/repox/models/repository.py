@@ -19,6 +19,7 @@ class ImportInfo:
     location: SourceLocation | None = None
     alias: str | None = None
     kind: Literal["module", "symbol"] | None = None
+    scope: Literal["module", "local"] = "module"
 
     def __post_init__(self) -> None:
         """Normalize import metadata and preserve backward compatibility."""

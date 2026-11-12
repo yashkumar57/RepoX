@@ -5,6 +5,11 @@ from pathlib import Path, PurePosixPath
 
 from repox.models.analysis import RepositoryAnalysis
 from repox.models.chunk import ChunkKind, CodeChunk
+from repox.models.identifiers import (
+    class_node_ids,
+    function_node_ids,
+    function_parent_id,
+)
 from repox.models.repository import ClassInfo, FileInfo, FunctionInfo
 
 
@@ -15,15 +20,6 @@ def _function_qualified_name(function: FunctionInfo) -> str:
     if function.parent_class:
         return f"{function.parent_class}.{function.name}"
     return function.name
-
-
-def _function_parent_id(path: str, function: FunctionInfo) -> str:
-    """Return the graph ID of a function's lexical parent."""
-    if function.parent_scope:
-        return f"function:{path}:{function.parent_scope}"
-    if function.parent_class:
-        return f"class:{path}:{function.parent_class}"
-    return f"file:{path}"
 
 
 def _chunk_id(
@@ -99,11 +95,11 @@ def _class_chunk(
     file_info: FileInfo,
     class_info: ClassInfo,
     lines: list[str],
+    symbol_id: str,
 ) -> CodeChunk | None:
     location = class_info.location
     if location is None:
         return None
-    symbol_id = f"class:{path}:{class_info.name}"
     content = _source_slice(lines, location.start_line, location.end_line)
     if not content.strip():
         return None
@@ -125,12 +121,13 @@ def _function_chunk(
     file_info: FileInfo,
     function: FunctionInfo,
     lines: list[str],
+    symbol_id: str,
+    parent_symbol_id: str | None,
 ) -> CodeChunk | None:
     location = function.location
     if location is None:
         return None
     qualified_name = _function_qualified_name(function)
-    symbol_id = f"function:{path}:{qualified_name}"
     content = _source_slice(lines, location.start_line, location.end_line)
     if not content.strip():
         return None
@@ -143,7 +140,7 @@ def _function_chunk(
         start_line=location.start_line,
         end_line=location.end_line,
         content=content,
-        parent_symbol_id=_function_parent_id(path, function),
+        parent_symbol_id=parent_symbol_id,
     )
 
 
@@ -229,18 +226,36 @@ def _chunk_file(path: str, file_info: FileInfo, root: Path) -> list[CodeChunk]:
         if current_hash != file_info.source_hash:
             raise ValueError(f"Source changed since analysis: {path}")
     chunks = _module_chunks(path, file_info, lines)
+    class_ids = class_node_ids(path, file_info)
+    function_ids = function_node_ids(path, file_info)
 
     for class_info in file_info.classes:
-        chunk = _class_chunk(path, file_info, class_info, lines)
+        chunk = _class_chunk(
+            path, file_info, class_info, lines, class_ids[id(class_info)]
+        )
         if chunk is not None:
             chunks.append(chunk)
         for method in class_info.methods:
-            method_chunk = _function_chunk(path, file_info, method, lines)
+            method_chunk = _function_chunk(
+                path,
+                file_info,
+                method,
+                lines,
+                function_ids[id(method)],
+                class_ids[id(class_info)],
+            )
             if method_chunk is not None:
                 chunks.append(method_chunk)
 
     for function in file_info.functions:
-        function_chunk = _function_chunk(path, file_info, function, lines)
+        function_chunk = _function_chunk(
+            path,
+            file_info,
+            function,
+            lines,
+            function_ids[id(function)],
+            function_parent_id(path, function, file_info, function_ids, class_ids),
+        )
         if function_chunk is not None:
             chunks.append(function_chunk)
     return chunks
@@ -266,3 +281,93 @@ def chunk_repository(analysis: RepositoryAnalysis) -> list[CodeChunk]:
             chunk.symbol_id,
         ),
     )
+
+
+def subdivide_chunks(
+    chunks: list[CodeChunk],
+    *,
+    max_tokens: int,
+    count_tokens,
+) -> list[CodeChunk]:
+    """Split oversized source chunks at line boundaries using provider tokens."""
+    if max_tokens < 1:
+        raise ValueError("max_tokens must be at least 1")
+
+    result: list[CodeChunk] = []
+    for chunk in chunks:
+        if count_tokens(chunk.embedding_text) <= max_tokens:
+            result.append(chunk)
+            continue
+
+        lines = chunk.content.splitlines()
+        segment: list[str] = []
+        segment_start = chunk.start_line
+        for offset, line in enumerate(lines):
+            candidate_lines = [*segment, line]
+            candidate_end = chunk.start_line + offset
+            candidate = _make_chunk(
+                file_path=chunk.file_path,
+                language=chunk.language,
+                kind=chunk.kind,
+                symbol_id=chunk.symbol_id,
+                symbol_name=chunk.symbol_name,
+                start_line=segment_start,
+                end_line=candidate_end,
+                content="\n".join(candidate_lines),
+                parent_symbol_id=chunk.parent_symbol_id,
+            )
+            if count_tokens(candidate.embedding_text) <= max_tokens:
+                segment = candidate_lines
+                continue
+            if not segment:
+                raise ValueError(
+                    f"Source line {chunk.file_path}:{candidate_end} exceeds the "
+                    f"embedding token limit of {max_tokens}"
+                )
+            result.append(
+                _make_chunk(
+                    file_path=chunk.file_path,
+                    language=chunk.language,
+                    kind=chunk.kind,
+                    symbol_id=chunk.symbol_id,
+                    symbol_name=chunk.symbol_name,
+                    start_line=segment_start,
+                    end_line=candidate_end - 1,
+                    content="\n".join(segment),
+                    parent_symbol_id=chunk.parent_symbol_id,
+                )
+            )
+            single_line = _make_chunk(
+                file_path=chunk.file_path,
+                language=chunk.language,
+                kind=chunk.kind,
+                symbol_id=chunk.symbol_id,
+                symbol_name=chunk.symbol_name,
+                start_line=candidate_end,
+                end_line=candidate_end,
+                content=line,
+                parent_symbol_id=chunk.parent_symbol_id,
+            )
+            if count_tokens(single_line.embedding_text) > max_tokens:
+                raise ValueError(
+                    f"Source line {chunk.file_path}:{candidate_end} exceeds the "
+                    f"embedding token limit of {max_tokens}"
+                )
+            segment = [line]
+            segment_start = candidate_end
+
+        if segment:
+            result.append(
+                _make_chunk(
+                    file_path=chunk.file_path,
+                    language=chunk.language,
+                    kind=chunk.kind,
+                    symbol_id=chunk.symbol_id,
+                    symbol_name=chunk.symbol_name,
+                    start_line=segment_start,
+                    end_line=chunk.end_line,
+                    content="\n".join(segment),
+                    parent_symbol_id=chunk.parent_symbol_id,
+                )
+            )
+    return result

@@ -11,10 +11,13 @@ from pydantic import BaseModel
 from repox.api.persistence import RepositoryMetadataStore
 from repox.api.schemas import (
     AnswerCitationResponse,
+    DebugTracebackFrameResponse,
     RepositoryAskRequest,
     RepositoryAskResponse,
     RepositoryCreateRequest,
     RepositoryCreateResponse,
+    RepositoryDebugRequest,
+    RepositoryDebugResponse,
     RepositoryGraphResponse,
     RepositoryIndexResponse,
     RepositoryRecordResponse,
@@ -69,12 +72,37 @@ def create_app(
         database_path = app.state.repository_service.workspace.parent / "repox.sqlite3"
     else:
         database_path = ":memory:"
-    app.state.metadata_store = RepositoryMetadataStore(database_path)
+    app.state.metadata_store_path = database_path
+    app.state.metadata_store = None
 
-    # Import checkouts created before SQLite persistence was introduced.
-    if isinstance(app.state.repository_service, GitHubRepositoryService):
-        for checkout in app.state.repository_service.list_checkouts():
-            app.state.metadata_store.upsert_repository(
+    # Checkout discovery is deferred until repository listing. App construction
+    # and /health must not run Git commands or open old Chroma collections.
+    app.state.workspace_discovered = False
+    app.state.indexing_service_factory = indexing_service_factory
+    app.state.indexing_services = {}
+    app.state.indexing_locks = {}
+    app.state.query_service_factory = query_service_factory
+    app.state.query_services = {}
+    app.state.embedding_provider = None
+
+    def metadata_store() -> RepositoryMetadataStore:
+        """Open workspace metadata only for routes that need it."""
+        store = app.state.metadata_store
+        if store is None:
+            store = RepositoryMetadataStore(app.state.metadata_store_path)
+            app.state.metadata_store = store
+        return store
+
+    def discover_workspace_checkouts() -> None:
+        """Register legacy checkouts without loading their vector indexes."""
+        if app.state.workspace_discovered:
+            return
+        app.state.workspace_discovered = True
+        service = app.state.repository_service
+        if not isinstance(service, GitHubRepositoryService):
+            return
+        for checkout in service.list_checkouts():
+            metadata_store().upsert_repository(
                 {
                     "repository_id": checkout.repository_id,
                     "owner": checkout.owner,
@@ -83,45 +111,6 @@ def create_app(
                     "branch": checkout.branch,
                 }
             )
-            # Recover a legacy index's basic real metrics without re-embedding.
-            index_path = checkout.path / ".repox" / "index"
-            if (
-                index_path.is_dir()
-                and app.state.metadata_store.get_repository(checkout.repository_id)[
-                    "index_result"
-                ]
-                is None
-            ):
-                try:
-                    from repox.analyzers.repository_analyzer import analyze_repository
-                    from repox.vector_store.chroma import ChromaVectorStore
-
-                    store = ChromaVectorStore.for_repository(checkout.path)
-                    embedded_count = store.count
-                    if embedded_count:
-                        analysis = analyze_repository(checkout.path)
-                        app.state.metadata_store.save_index_result(
-                            checkout.repository_id,
-                            RepositoryIndexResponse(
-                                repository_id=checkout.repository_id,
-                                analyzed_files=len(analysis.files),
-                                relationships=len(analysis.relationships),
-                                total_chunks=embedded_count,
-                                embedded_chunks=embedded_count,
-                                reused_chunks=0,
-                                deleted_chunks=0,
-                            ).model_dump(),
-                        )
-                except Exception:
-                    # The checkout remains available even if an old index cannot
-                    # be inspected in this environment.
-                    pass
-    app.state.indexing_service_factory = indexing_service_factory
-    app.state.indexing_services = {}
-    app.state.indexing_locks = {}
-    app.state.query_service_factory = query_service_factory
-    app.state.query_services = {}
-    app.state.embedding_provider = None
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
@@ -136,9 +125,10 @@ def create_app(
     )
     def list_repositories() -> list[RepositoryRecordResponse]:
         """Return repositories persisted by this RepoX workspace."""
+        discover_workspace_checkouts()
         return [
             RepositoryRecordResponse(**record)
-            for record in app.state.metadata_store.list_repositories()
+            for record in metadata_store().list_repositories()
         ]
 
     @app.get(
@@ -153,7 +143,7 @@ def create_app(
             checkout = app.state.repository_service.get_checkout(repository_id)
         except RepositoryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        app.state.metadata_store.upsert_repository(
+        metadata_store().upsert_repository(
             {
                 "repository_id": checkout.repository_id,
                 "owner": checkout.owner,
@@ -162,7 +152,7 @@ def create_app(
                 "branch": checkout.branch,
             }
         )
-        record = app.state.metadata_store.get_repository(repository_id)
+        record = metadata_store().get_repository(repository_id)
         if record is None:
             raise HTTPException(
                 status_code=404, detail="Repository metadata not found."
@@ -196,7 +186,7 @@ def create_app(
                 detail=f"Repository acquisition failed: {exc}",
             ) from exc
 
-        app.state.metadata_store.upsert_repository(
+        metadata_store().upsert_repository(
             {
                 "repository_id": checkout.repository_id,
                 "owner": checkout.owner,
@@ -229,7 +219,7 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
             ) from exc
-        app.state.metadata_store.upsert_repository(
+        metadata_store().upsert_repository(
             {
                 "repository_id": checkout.repository_id,
                 "owner": checkout.owner,
@@ -293,7 +283,7 @@ def create_app(
             reused_chunks=report.reused_chunks,
             deleted_chunks=report.deleted_chunks,
         )
-        app.state.metadata_store.save_index_result(repository_id, response.model_dump())
+        metadata_store().save_index_result(repository_id, response.model_dump())
         return response
 
     def get_query_services(repository_id: str, repository_path: Path):
@@ -451,6 +441,67 @@ def create_app(
             citation_retry_used=result.citation_retry_used,
             citation_fallback_used=result.citation_fallback_used,
             uncited_draft=result.uncited_draft,
+        )
+
+    @app.post(
+        "/repositories/{repository_id}/debug",
+        response_model=RepositoryDebugResponse,
+        tags=["repositories"],
+        summary="Investigate a Python bug using indexed repository evidence",
+    )
+    def debug_repository(
+        repository_id: str, request: RepositoryDebugRequest
+    ) -> RepositoryDebugResponse:
+        """Parse traceback facts and investigate the bug with cited source context."""
+        repository_path = resolve_repository(repository_id)
+        _, qa = get_query_services(repository_id, repository_path)
+        from repox.debugging.service import DebuggingService
+
+        try:
+            result = DebuggingService(qa).analyze(
+                description=request.description,
+                traceback_text=request.traceback,
+                top_k=request.top_k,
+                context_limit=request.context_limit,
+                token_budget=request.token_budget,
+                max_output_tokens=request.max_output_tokens,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
+
+        parsed = result.traceback
+        frames = [
+            DebugTracebackFrameResponse(
+                path=frame.path, line=frame.line, function=frame.function
+            )
+            for frame in parsed.frames
+        ]
+        innermost = frames[-1] if frames else None
+        return RepositoryDebugResponse(
+            repository_id=repository_id,
+            description=result.description,
+            exception_type=parsed.exception_type,
+            exception_message=parsed.exception_message,
+            frames=frames,
+            innermost_frame=innermost,
+            answer=result.answer.answer,
+            model=result.answer.model,
+            citations=[
+                AnswerCitationResponse(
+                    source_id=item.source_id,
+                    file_path=item.file_path,
+                    start_line=item.start_line,
+                    end_line=item.end_line,
+                )
+                for item in result.answer.citations
+            ],
+            citation_fallback_used=result.answer.citation_fallback_used,
         )
 
     return app

@@ -531,3 +531,25 @@ and evidence. The endpoint runs deterministic analysis only and does not load
 embedding or LLM models. The frontend Code Graph view uses this endpoint rather
 than placeholder graph data. The current UI limits its rendered graph to 60
 nodes for responsiveness; the API returns the complete graph.
+
+
+## Debugging an issue (Day 17)
+
+The API exposes a repository-grounded Python debugging workflow at
+`POST /repositories/{repository_id}/debug`. Submit a bug `description`, a raw
+Python `traceback`, or both. RepoX parses traceback frames and exception details
+deterministically, then asks the existing retrieval and QA pipeline to investigate
+the failure using indexed source evidence. Responses include parsed frames, the
+innermost frame, a cited investigation, and citation-fallback status.
+
+The workflow does not modify repository files or apply patches. Root-cause
+statements are hypotheses unless directly supported by retrieved source evidence.
+
+## Day 18: Traceback-to-source evidence resolution
+
+Day 18 strengthens Python debugging before model inference. Traceback paths map
+only to a unique indexed file, ambiguous suffix matches are rejected, and the
+narrowest enclosing function chunk is preferred for each frame. Debugging
+instructions distinguish the observed `None` receiver at an attribute access
+from an unproven helper return value. See
+[`docs/day-18-implementation.md`](docs/day-18-implementation.md).

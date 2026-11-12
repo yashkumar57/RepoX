@@ -1,17 +1,12 @@
 """Build a repository graph from parsed source metadata."""
 
 from repox.models.graph import GraphEdge, GraphNode, RepositoryGraph
-from repox.models.identifiers import class_node_ids, function_node_ids
-from repox.models.repository import FileInfo, FunctionInfo, Relationship
-
-
-def _function_qualified_name(function: FunctionInfo) -> str:
-    """Return the lexical name of a function within its file."""
-    if function.parent_scope:
-        return f"{function.parent_scope}.{function.name}"
-    if function.parent_class:
-        return f"{function.parent_class}.{function.name}"
-    return function.name
+from repox.models.identifiers import (
+    class_node_ids,
+    function_node_ids,
+    function_parent_id,
+)
+from repox.models.repository import FileInfo, Relationship
 
 
 def build_repository_graph(
@@ -77,7 +72,7 @@ def build_repository_graph(
     for path, file_info in sorted(files.items()):
         for function in file_info.functions:
             function_id = function_ids[path][id(function)]
-            parent_id = _parent_node_id(
+            parent_id = function_parent_id(
                 path, function, file_info, function_ids[path], class_ids[path]
             )
             graph.add_node(
@@ -89,14 +84,15 @@ def build_repository_graph(
                     location=function.location,
                 )
             )
-            graph.add_edge(
-                GraphEdge(
-                    source=parent_id,
-                    target=function_id,
-                    kind="contains",
-                    evidence=f"function {function.name}",
+            if parent_id is not None:
+                graph.add_edge(
+                    GraphEdge(
+                        source=parent_id,
+                        target=function_id,
+                        kind="contains",
+                        evidence=f"function {function.name}",
+                    )
                 )
-            )
 
     for relationship in relationships:
         if relationship.kind == "imports":
@@ -114,44 +110,3 @@ def build_repository_graph(
             )
         )
     return graph
-
-
-def _parent_node_id(
-    path: str,
-    function: FunctionInfo,
-    file_info: FileInfo,
-    function_ids: dict[int, str],
-    class_ids: dict[int, str],
-) -> str:
-    """Resolve a nested function's lexical parent to its unique definition."""
-    if function.parent_scope:
-        all_functions = list(file_info.functions)
-        for class_info in file_info.classes:
-            all_functions.extend(class_info.methods)
-        candidates = [
-            candidate
-            for candidate in all_functions
-            if _function_qualified_name(candidate) == function.parent_scope
-            and candidate.location is not None
-            and function.location is not None
-            and candidate.location.start_line <= function.location.start_line
-            and candidate.location.end_line >= function.location.end_line
-        ]
-        if len(candidates) == 1:
-            return function_ids[id(candidates[0])]
-        matching = [
-            candidate
-            for candidate in all_functions
-            if _function_qualified_name(candidate) == function.parent_scope
-        ]
-        if len(matching) == 1:
-            return function_ids[id(matching[0])]
-        return f"function:{path}:{function.parent_scope}"
-    if function.parent_class:
-        candidates = [
-            item for item in file_info.classes if item.name == function.parent_class
-        ]
-        if len(candidates) == 1:
-            return class_ids[id(candidates[0])]
-        return f"class:{path}:{function.parent_class}"
-    return f"file:{path}"

@@ -1,6 +1,6 @@
 """Request and response schemas for repository API operations."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RepositoryCreateRequest(BaseModel):
@@ -172,3 +172,43 @@ class RepositoryGraphResponse(BaseModel):
     summary: RepositoryGraphSummaryResponse
     nodes: list[RepositoryGraphNodeResponse]
     edges: list[RepositoryGraphEdgeResponse]
+
+
+class RepositoryDebugRequest(BaseModel):
+    """A Python bug report, optionally accompanied by a traceback."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(default="", max_length=8000)
+    traceback: str = Field(default="", max_length=30000)
+    top_k: int = Field(default=8, ge=1, le=30)
+    context_limit: int = Field(default=12, ge=0, le=50)
+    token_budget: int = Field(default=8000, ge=256, le=30000)
+    max_output_tokens: int = Field(default=1200, ge=1, le=4000)
+
+    @model_validator(mode="after")
+    def require_bug_input(self):
+        if not self.description.strip() and not self.traceback.strip():
+            raise ValueError("Provide a bug description, a traceback, or both.")
+        return self
+
+
+class DebugTracebackFrameResponse(BaseModel):
+    path: str
+    line: int
+    function: str
+
+
+class RepositoryDebugResponse(BaseModel):
+    """Structured traceback facts plus a cited repository investigation."""
+
+    repository_id: str
+    description: str
+    exception_type: str | None
+    exception_message: str | None
+    frames: list[DebugTracebackFrameResponse]
+    innermost_frame: DebugTracebackFrameResponse | None
+    answer: str
+    model: str
+    citations: list[AnswerCitationResponse]
+    citation_fallback_used: bool

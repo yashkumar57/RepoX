@@ -17,6 +17,10 @@ CITATION RULES (MANDATORY):
   evidence" in the supplied evidence.
 - Copy the complete citation exactly, including its path and inclusive line
   range. Do not calculate, shorten, or invent line ranges.
+- Citation format is exactly [relative/path.py:12-24]. Do not put the citation
+  inside code formatting or change slashes, underscores, or line numbers.
+- Example sentence: "The function validates the input before processing it
+  [src/service.py:12-24]."
 - A citation must support the claim immediately before it. Use more than one
   citation when a claim depends on multiple evidence items.
 - Do not output uncited repository-specific claims or a separate references
@@ -38,9 +42,11 @@ class PromptBuilder:
         user_prompt = (
             f"User question:\n{context.query}\n\n"
             "Answer using only the repository evidence below. Keep the answer "
-            "concise. End every factual bullet or paragraph with an exact "
-            "citation copied from a 'Valid citation for this evidence' line. "
-            "Do not modify the citation.\n\n"
+            "concise. Every factual sentence about the repository must end "
+            "with one exact citation in the form [relative/path.py:12-24]. "
+            "Copy the path and inclusive line range from the evidence header "
+            "without markdown code ticks or other changes. If a claim cannot be "
+            "supported, omit it.\n\n"
             f"{context.rendered_context}"
         )
         estimated_tokens = self.token_counter.count(SYSTEM_PROMPT + "\n" + user_prompt)

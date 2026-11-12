@@ -17,12 +17,12 @@ class OllamaChatModel:
 
     def __init__(
         self,
-        model: str = "qwen2.5-coder:3b",
+        model: str | None = None,
         *,
         host: str | None = None,
         timeout: float = 120.0,
     ) -> None:
-        if not model.strip():
+        if model is not None and not model.strip():
             raise ValueError("model must not be empty")
         if timeout <= 0:
             raise ValueError("timeout must be greater than 0")
@@ -34,7 +34,8 @@ class OllamaChatModel:
         if not configured_host.startswith(("http://", "https://")):
             raise ValueError("Ollama host must start with http:// or https://")
 
-        self._model = model
+        default_model = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+        self._model = (model or default_model).strip()
         self._host = configured_host
         self._timeout = timeout
 

@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { createRepository, getRepositoryGraph, indexRepository, listRepositories, type RepositoryCreateResponse, type RepositoryGraphResponse, type RepositoryIndexResponse } from '@/lib/api'
+import { askRepository, createRepository, debugRepository, getRepositoryGraph, indexRepository, listRepositories, searchRepository, type RepositoryAskResponse, type RepositoryCreateResponse, type RepositoryDebugResponse, type RepositoryGraphResponse, type RepositoryIndexResponse, type RepositorySearchResponse } from '@/lib/api'
 import {
   Activity,
   ArrowRight,
   BarChart3,
   BookOpen,
+  Bug as BugIcon,
   Check,
   ChevronDown,
   ChevronRight,
@@ -37,20 +38,14 @@ import {
   Zap,
 } from 'lucide-react'
 
-type Screen = 'overview' | 'onboarding' | 'search' | 'ask' | 'graph' | 'settings'
+type Screen = 'overview' | 'onboarding' | 'search' | 'ask' | 'debug' | 'graph' | 'settings'
 
 const navItems: { id: Screen; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'search', label: 'Semantic search', icon: Search },
   { id: 'ask', label: 'Ask RepoX', icon: CircleHelp },
+  { id: 'debug', label: 'Debug an issue', icon: BugIcon },
   { id: 'graph', label: 'Code graph', icon: Network },
-]
-
-const searchResults = [
-  { path: 'src/indexer/embeddings.ts', symbol: 'createEmbedding', type: 'Function', lang: 'TypeScript', lines: '42–68', score: '0.96', code: 'export async function createEmbedding\n  (content: string): Promise<number[]> {\n  const response = await embeddings.embed({\n    model: EMBEDDING_MODEL, input: content,\n  })\n  return response.embedding\n}' },
-  { path: 'src/search/vector-store.ts', symbol: 'searchSimilarChunks', type: 'Function', lang: 'TypeScript', lines: '18–57', score: '0.91', code: 'export async function searchSimilarChunks(\n  query: string, topK = 8\n): Promise<SearchResult[]> {\n  const vector = await createEmbedding(query)\n  return vectorStore.query({ vector, topK })\n}' },
-  { path: 'src/models/repository.py', symbol: 'RepositoryStatus', type: 'Enum', lang: 'Python', lines: '9–16', score: '0.84', code: 'class RepositoryStatus(str, Enum):\n    PENDING = "pending"\n    CLONING = "cloning"\n    INDEXING = "indexing"\n    READY = "ready"'
-  },
 ]
 
 export function RepoXApp() {
@@ -60,11 +55,7 @@ export function RepoXApp() {
   const [repository, setRepository] = useState<RepositoryCreateResponse | null>(null)
   const [indexResult, setIndexResult] = useState<RepositoryIndexResponse | null>(null)
   const repo = repository ? `${repository.owner} / ${repository.name}` : 'No repository connected'
-  const [query, setQuery] = useState('How are embeddings generated and stored?')
-  const [searched, setSearched] = useState(false)
-  const [question, setQuestion] = useState('')
   const [selectedNode, setSelectedNode] = useState('')
-  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -96,7 +87,7 @@ export function RepoXApp() {
   }, [])
 
   const themeClass = dark ? 'dark' : 'light'
-  const pageTitle = useMemo(() => ({ overview: 'Repository overview', onboarding: 'Connect a repository', search: 'Semantic code search', ask: 'Ask RepoX', graph: 'Code graph', settings: 'Settings' })[screen], [screen])
+  const pageTitle = useMemo(() => ({ overview: 'Repository overview', onboarding: 'Connect a repository', search: 'Semantic code search', ask: 'Ask RepoX', debug: 'Debug an issue', graph: 'Code graph', settings: 'Settings' })[screen], [screen])
 
   return (
     <div className={themeClass}>
@@ -124,7 +115,9 @@ export function RepoXApp() {
         {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
         <main className="repox-main">
           <header className="topbar"><button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open menu"><Menu /></button><div className="breadcrumbs"><span>acme</span><ChevronRight /><strong>{pageTitle}</strong></div><div className="top-actions"><button className="icon-button" aria-label="Activity"><Activity /></button><div className="avatar">JD</div></div></header>
-          <div className="page-content">{screen === 'overview' && <Overview onNavigate={setScreen} repository={repository} indexResult={indexResult} />}{screen === 'onboarding' && <Onboarding onConnected={(value, result) => { setRepository(value); setIndexResult(result); setScreen('overview') }} />}{screen === 'search' && <SearchScreen query={query} setQuery={setQuery} searched={searched} onSearch={() => setSearched(true)} onCopy={() => { setCopied(true); setTimeout(() => setCopied(false), 1200) }} copied={copied} />}{screen === 'ask' && <AskScreen question={question} setQuestion={setQuestion} onAsk={() => setQuestion('')}/>} {screen === 'graph' && <GraphScreen repositoryId={repository?.repository_id ?? null} selectedNode={selectedNode} setSelectedNode={setSelectedNode} />} {screen === 'settings' && <SettingsScreen dark={dark} setDark={setDark} />}</div>
+          <div className="page-content">{screen === 'overview' && <Overview onNavigate={setScreen} repository={repository} indexResult={indexResult} />}{screen === 'onboarding' && <Onboarding onConnected={(value, result) => { setRepository(value); setIndexResult(result); setScreen('overview') }} />}{screen === 'search' && <SearchScreen key={repository?.repository_id ?? 'none'} repositoryId={repository?.repository_id ?? null} initialQuery="" />}{screen === 'ask' && <AskScreen key={repository?.repository_id ?? 'none'} repositoryId={repository?.repository_id ?? null} />}<div style={{ display: screen === 'debug' ? 'contents' : 'none' }}>
+            <DebugScreen repositoryId={repository?.repository_id ?? null} />
+          </div> {screen === 'graph' && <GraphScreen repositoryId={repository?.repository_id ?? null} selectedNode={selectedNode} setSelectedNode={setSelectedNode} />} {screen === 'settings' && <SettingsScreen dark={dark} setDark={setDark} />}</div>
         </main>
       </div>
     </div>
@@ -196,9 +189,156 @@ function Onboarding({ onConnected }: { onConnected: (repository: RepositoryCreat
 
 function DownloadIcon() { return <Upload className="rotate-180" /> }
 
-function SearchScreen({ query, setQuery, searched, onSearch, onCopy, copied }: { query: string; setQuery: (s: string) => void; searched: boolean; onSearch: () => void; onCopy: () => void; copied: boolean }) { return <><PageHeader eyebrow="SEARCH / SEMANTIC" title="Semantic code search" description="Find concepts and implementations across the indexed repository." /><div className="search-bar"><Search /><input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onSearch() }} /><span className="kbd">⌘ K</span><button className="button primary" onClick={onSearch}>Search</button></div><div className="search-toolbar"><span className="muted">{searched ? '3 results' : 'Try a natural-language query'}</span><div className="toolbar-actions"><label className="select-label">Top K <select defaultValue="8"><option>8</option><option>12</option><option>20</option></select></label><button className="button ghost"><Code2 /> All languages</button></div></div><div className="search-results">{searchResults.map((result, index) => <div className="result-card" key={result.path}><div className="result-heading"><div><span className="result-index">0{index + 1}</span><strong>{result.symbol}</strong><span className="type-chip">{result.type}</span></div><span className="relevance"><Sparkles /> {result.score} relevance</span></div><div className="result-meta"><span className="mono"><FileCode2 /> {result.path}</span><span className="mono">Lines {result.lines}</span><span className="lang-dot" /> {result.lang}</div><div className="code-preview"><div className="code-top"><span>source preview</span><button className="icon-button" onClick={onCopy} aria-label="Copy code">{copied ? <Check /> : <Copy />}</button></div><pre><code>{result.code}</code></pre></div></div>)}</div></> }
+function SearchScreen({ repositoryId, initialQuery }: { repositoryId: string | null; initialQuery: string }) {
+  const [query, setQuery] = useState(initialQuery || '')
+  const [topK, setTopK] = useState('8')
+  const [result, setResult] = useState<RepositorySearchResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [hasSearched, setHasSearched] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
 
-function AskScreen({ question, setQuestion, onAsk }: { question: string; setQuestion: (s: string) => void; onAsk: () => void }) { const [answered, setAnswered] = useState(false); return <><PageHeader eyebrow="ASK / REPOSITORY Q&A" title="Ask RepoX" description="Answers are generated from your repository and linked back to source evidence." /><div className="ask-layout"><div className="ask-answer panel"><div className="answer-top"><div className="assistant-avatar"><Sparkles /></div><div><strong>RepoX answer</strong>{answered && <span className="muted">Grounded in 3 source excerpts · just now</span>}</div>{answered && <span className="badge success"><Check /> Citations verified</span>}</div>{answered ? <div className="answer-body"><p>Embeddings are generated during the indexing pipeline in <Citation path="src/indexer/embeddings.ts" lines="42–68" />. The indexer sends normalized file chunks to the embedding model, then stores the resulting vectors alongside metadata.</p><p>Search uses the same embedding function to turn a natural-language query into a vector. <Citation path="src/search/vector-store.ts" lines="18–57" /> then queries the vector store with a configurable top-K value and returns the most similar chunks.</p><div className="evidence-box"><div className="eyebrow">RETRIEVED EVIDENCE</div><p className="mono">{'createEmbedding(content) → vectorStore.upsert({ vector, metadata })'}</p><span>Evidence fallback is shown separately from generated explanation.</span></div></div> : <div className="empty-answer"><Sparkles /><h2>Ask a question about your repository</h2><p>RepoX will retrieve relevant source, then explain the answer with verifiable citations.</p></div>}</div><div className="ask-composer panel"><div className="composer-label"><span>Repository question</span><span className="muted mono">⌘ Enter</span></div><textarea value={question} onChange={e => setQuestion(e.target.value)} placeholder="e.g. Where is authentication handled?" onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); setAnswered(true); onAsk() } }} /><div className="composer-footer"><span className="muted">Answers use the current <span className="mono">main</span> branch</span><button className="button primary" onClick={() => setAnswered(true)}><Send /> Ask RepoX</button></div></div></div></> }
+  async function runSearch() {
+    if (!repositoryId) { setError('Connect a repository before searching.'); return }
+    if (!query.trim()) { setError('Enter a search query.'); return }
+    setLoading(true)
+    setError('')
+    setResult(null)
+    setHasSearched(true)
+    try {
+      const response = await searchRepository(repositoryId, { query: query.trim(), top_k: Number(topK) })
+      setResult(response)
+    } catch (cause) {
+      setResult(null)
+      setError(cause instanceof Error ? cause.message : 'Search failed. Check the backend logs.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function copyCode(content: string) {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(content)
+      window.setTimeout(() => setCopied(null), 1200)
+    } catch {
+      setError('Clipboard access was blocked by the browser.')
+    }
+  }
+
+  return <><PageHeader eyebrow="SEARCH / SEMANTIC" title="Semantic code search" description="Find concepts and implementations across the indexed repository." /><form className="search-bar" onSubmit={event => { event.preventDefault(); if (!loading) void runSearch() }}><Search /><input aria-label="Semantic search query" value={query} onChange={event => setQuery(event.target.value)} placeholder="Describe the code or concept you want to find" /><span className="kbd">↵ Enter</span><button type="submit" className="button primary" disabled={loading || !repositoryId || !query.trim()}>{loading ? <><Activity className="spin" /> Searching…</> : 'Search'}</button></form><div className="search-toolbar"><span className="muted">{result ? `${result.result_count} results for “${result.query}”` : hasSearched && !loading ? 'No results' : 'Search the active repository'}</span><div className="toolbar-actions"><label className="select-label">Top K <select value={topK} onChange={event => setTopK(event.target.value)}><option value="8">8</option><option value="12">12</option><option value="20">20</option></select></label><span className="muted">Active repository only</span></div></div>{error && <div className="error-message" role="alert">{error}</div>}{!repositoryId && <div className="empty-answer"><h2>No active repository</h2><p>Connect and index a repository before running semantic search.</p></div>}{loading && <div className="panel muted">Embedding query and retrieving source chunks…</div>}{result && result.results.length === 0 && !loading && <div className="panel empty-answer"><h2>No matching code found</h2><p>Try different wording or increase Top K.</p></div>}<div className="search-results">{result?.results.map((item, index) => <div className="result-card" key={`${item.file_path}:${item.start_line}:${item.symbol_id}`}><div className="result-heading"><div><span className="result-index">{String(index + 1).padStart(2, '0')}</span><strong>{item.symbol_name || item.file_path}</strong><span className="type-chip">{item.kind}</span></div><span className="relevance"><Sparkles /> {item.score.toFixed(3)} similarity</span></div><div className="result-meta"><span className="mono"><FileCode2 /> {item.file_path}</span><span className="mono">Lines {item.start_line}–{item.end_line}</span><span className="lang-dot" /> {item.language}</div><div className="code-preview"><div className="code-top"><span>indexed source</span><button className="icon-button" onClick={() => void copyCode(item.content)} aria-label="Copy source">{copied === item.content ? <Check /> : <Copy />}</button></div><pre><code>{item.content}</code></pre></div></div>)}</div></>
+}
+
+function AskScreen({ repositoryId }: { repositoryId: string | null }) {
+  const [question, setQuestion] = useState('')
+  const [result, setResult] = useState<RepositoryAskResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function runAsk() {
+    if (!repositoryId) { setError('Connect a repository before asking questions.'); return }
+    if (!question.trim()) { setError('Enter a question about the repository.'); return }
+    setLoading(true)
+    setError('')
+    setResult(null)
+    try {
+      setResult(await askRepository(repositoryId, { query: question.trim(), top_k: 6, context_limit: 8 }))
+    } catch (cause) {
+      setResult(null)
+      setError(cause instanceof Error ? cause.message : 'The question could not be answered.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return <><PageHeader eyebrow="ASK / REPOSITORY Q&A" title="Ask RepoX" description="Answers are generated from retrieved source in the active repository and linked to validated evidence." /><div className="ask-layout"><div className="ask-answer panel"><div className="answer-top"><div className="assistant-avatar"><Sparkles /></div><div><strong>RepoX answer</strong>{result && <span className="muted">Generated by {result.model}</span>}</div>{result && <span className={`badge ${result.citations.length ? 'success' : 'muted-badge'}`}>{result.citations.length} validated citations</span>}</div>{loading ? <div className="empty-answer"><Activity className="spin" /><h2>Retrieving evidence and generating an answer…</h2><p>This may take a little while when the local model is loading.</p></div> : result ? <div className="answer-body"><div className="answer-text" dangerouslySetInnerHTML={{ __html: renderDebugMarkdown(result.answer) }} />{result.citation_fallback_used && <div className="evidence-box"><strong>Evidence-only fallback</strong><p>The model did not produce a citation-compliant answer. The response contains retrieved source excerpts rather than a synthesized explanation.</p></div>}{result.citations.length > 0 && <div className="evidence-box"><div className="eyebrow">VALIDATED SOURCE CITATIONS</div>{result.citations.map(citation => <p className="mono" key={`${citation.file_path}:${citation.start_line}:${citation.end_line}`}>{citation.file_path}:{citation.start_line}–{citation.end_line}</p>)}</div>}</div> : <div className="empty-answer"><Sparkles /><h2>Ask a question about your repository</h2><p>RepoX retrieves relevant source, then generates an answer with validated citations.</p></div>}</div><div className="ask-composer panel"><div className="composer-label"><span>Repository question</span><span className="muted mono">Ctrl / ⌘ + Enter</span></div><textarea value={question} onChange={event => setQuestion(event.target.value)} placeholder="e.g. How is Dijkstra's shortest path algorithm implemented?" onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !loading) { event.preventDefault(); void runAsk() } }} /><div className="composer-footer"><span className="muted">Uses the currently selected repository</span><button className="button primary" onClick={() => void runAsk()} disabled={loading || !repositoryId}>{loading ? <><Activity className="spin" /> Asking…</> : <><Send /> Ask RepoX</>}</button></div>{error && <div className="error-message" role="alert">{error}</div>}</div></div></>
+}
+
+function DebugScreen({ repositoryId }: { repositoryId: string | null }) {
+  const [description, setDescription] = useState('')
+  const [traceback, setTraceback] = useState('')
+  const [result, setResult] = useState<RepositoryDebugResponse | null>(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function investigate() {
+    if (!repositoryId || (!description.trim() && !traceback.trim()) || loading) return
+    setLoading(true); setError(''); setResult(null)
+    try { setResult(await debugRepository(repositoryId, { description, traceback })) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Debug request failed.') }
+    finally { setLoading(false) }
+  }
+
+  return <>
+    <PageHeader eyebrow="DEBUG / PYTHON INVESTIGATION" title="Debug an issue" description="Combine a bug report and traceback with source-grounded repository evidence." />
+    <div className="debug-layout">
+      <section className="panel debug-form">
+        <label className="field-label" htmlFor="bug-description">What went wrong?</label>
+        <textarea id="bug-description" value={description} onChange={e => setDescription(e.target.value)} placeholder="Describe the unexpected behavior, inputs, and what you expected instead." />
+        <label className="field-label" htmlFor="bug-traceback">Python traceback <span className="muted">optional</span></label>
+        <textarea id="bug-traceback" className="traceback-input" value={traceback} onChange={e => setTraceback(e.target.value)} placeholder={'Traceback (most recent call last):\n  File "src/app.py", line 42, in run\n    process()\nValueError: invalid input'} />
+        {!repositoryId && <div className="error-message">Connect and index a repository before debugging.</div>}
+        {error && <div className="error-message" role="alert">{error}</div>}
+        <div className="composer-footer"><span className="muted">Traceback parsing is deterministic; diagnosis uses indexed source.</span><button className="button primary" disabled={!repositoryId || (!description.trim() && !traceback.trim()) || loading} onClick={investigate}>{loading ? <><Activity className="spin" /> Investigating…</> : <><BugIcon /> Investigate</>}</button></div>
+      </section>
+      <section className="panel debug-result">
+        {!result ? <div className="empty-answer"><BugIcon /><h2>Investigation results</h2><p>Submit a description or traceback to inspect parsed frames, likely causes and supporting source citations.</p></div> : <>
+          <div className="answer-top"><div className="assistant-avatar"><BugIcon /></div><div><strong>Debugging report</strong><span className="muted">Generated by {result.model}</span></div>{result.citation_fallback_used && <span className="badge muted-badge">Evidence fallback</span>}</div>
+          <div className="debug-facts">
+            <div><span className="eyebrow">EXCEPTION</span><strong>{result.exception_type ?? 'Not detected'}</strong><span>{result.exception_message || 'No exception message parsed'}</span></div>
+            <div><span className="eyebrow">TRACEBACK FRAMES</span><strong>{result.frames.length}</strong><span>{result.innermost_frame ? `${result.innermost_frame.path}:${result.innermost_frame.line} · ${result.innermost_frame.function}` : 'No standard frames detected'}</span></div>
+          </div>
+          {result.frames.length > 0 && <div className="detail-block"><strong>Execution frames · outermost to innermost</strong>{result.frames.map((frame, index) => <div className="relationship" key={`${frame.path}:${frame.line}:${index}`}><span className="mono">{index + 1}. {frame.path}:{frame.line}</span><span>in {frame.function}</span></div>)}</div>}
+          <div className="debug-answer" dangerouslySetInnerHTML={{ __html: renderDebugMarkdown(result.answer) }} />
+          <div className="detail-block"><strong>Validated source citations ({result.citations.length})</strong>{result.citations.map(citation => <div className="relationship" key={`${citation.file_path}:${citation.start_line}:${citation.end_line}`}><FileCode2 /><span className="mono">{citation.file_path}:{citation.start_line}–{citation.end_line}</span></div>)}</div>
+        </>}
+      </section>
+    </div>
+  </>
+}
+
+function renderDebugMarkdown(markdown: string): string {
+  const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char] ?? char)
+  const inline = (value: string) => escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  const blocks = markdown.split(/```([\w+-]*)\n([\s\S]*?)```/g)
+  let html = ''
+  for (let index = 0; index < blocks.length; index += 1) {
+    if (index % 3 === 1) {
+      const code = blocks[index + 1] ?? ''
+      html += `<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`
+      index += 1
+      continue
+    }
+    const lines = (blocks[index] ?? '').split('\n')
+    let paragraph: string[] = []
+    let list: string[] = []
+    let listType: 'ul' | 'ol' | null = null
+    const flushParagraph = () => { if (paragraph.length) { html += `<p>${paragraph.map(inline).join('<br />')}</p>`; paragraph = [] } }
+    const flushList = () => { if (list.length && listType) { html += `<${listType}>${list.map(item => `<li>${inline(item)}</li>`).join('')}</${listType}>`; list = [] }; listType = null }
+    for (const line of lines) {
+      const heading = line.match(/^(#{1,3})\s+(.+)$/)
+      const bullet = line.match(/^\s*[-*]\s+(.+)$/)
+      const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/)
+      if (heading) { flushParagraph(); flushList(); const level = heading[1].length; html += `<h${level}>${inline(heading[2])}</h${level}>` }
+      else if (bullet || numbered) {
+        flushParagraph()
+        const nextType = bullet ? 'ul' : 'ol'
+        if (listType && listType !== nextType) flushList()
+        listType = nextType
+        list.push((bullet ?? numbered)![1])
+      } else if (!line.trim()) { flushParagraph(); flushList() }
+      else { flushList(); paragraph.push(line) }
+    }
+    flushParagraph(); flushList()
+  }
+  return html
+}
+
 function Citation({ path, lines }: { path: string; lines: string }) { return <button className="citation"><FileCode2 /> <span className="mono">{path}</span><span className="mono muted">:{lines}</span></button> }
 
 function GraphScreen({ repositoryId, selectedNode, setSelectedNode }: { repositoryId: string | null; selectedNode: string; setSelectedNode: (s: string) => void }) {

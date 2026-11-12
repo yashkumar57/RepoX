@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from repox.analyzers.repository_analyzer import analyze_repository
-from repox.chunking import chunk_repository
+from repox.chunking import chunk_repository, subdivide_chunks
+from repox.models.chunk import CodeChunk
 
 FIXTURE_ROOT = Path(__file__).parent.parent / "fixtures" / "sample_repo"
 
@@ -110,3 +111,104 @@ def test_chunking_rejects_source_changed_after_analysis(tmp_path):
 
     with pytest.raises(ValueError, match="Source changed since analysis"):
         chunk_repository(analysis)
+
+
+def test_duplicate_definitions_use_their_canonical_graph_symbol_ids(tmp_path):
+    (tmp_path / "example.py").write_text(
+        "class Duplicate:\n"
+        "    def run(self):\n"
+        "        return 1\n\n"
+        "class Duplicate:\n"
+        "    def run(self):\n"
+        "        return 2\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_repository(tmp_path)
+    chunks = chunk_repository(analysis)
+    symbol_chunks = [chunk for chunk in chunks if chunk.kind != "module"]
+    function_chunks = [chunk for chunk in chunks if chunk.kind == "function"]
+
+    assert len(symbol_chunks) == 4
+    assert all(chunk.symbol_id in analysis.graph.nodes for chunk in symbol_chunks)
+    assert all(
+        chunk.parent_symbol_id in analysis.graph.nodes for chunk in function_chunks
+    )
+    assert all("@" in chunk.symbol_id for chunk in symbol_chunks)
+
+
+def test_duplicate_classes_keep_canonical_nested_parent_ids(tmp_path):
+    (tmp_path / "example.py").write_text(
+        "class Duplicate:\n"
+        "    def run(self):\n"
+        "        def inner():\n"
+        "            return 1\n"
+        "        return inner()\n\n"
+        "class Duplicate:\n"
+        "    def run(self):\n"
+        "        def inner():\n"
+        "            return 2\n"
+        "        return inner()\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_repository(tmp_path)
+    graph = analysis.graph
+    chunks = chunk_repository(analysis)
+    class_ids = sorted(node.id for node in graph.nodes.values() if node.kind == "class")
+    method_ids = sorted(
+        node.id
+        for node in graph.nodes.values()
+        if node.kind == "function" and node.name == "run"
+    )
+    inner_ids = sorted(
+        node.id
+        for node in graph.nodes.values()
+        if node.kind == "function" and node.name == "inner"
+    )
+
+    assert all("@" in symbol_id for symbol_id in [*class_ids, *method_ids, *inner_ids])
+    for class_id, method_id, inner_id in zip(
+        class_ids, method_ids, inner_ids, strict=True
+    ):
+        assert graph.neighbors(class_id, "contains") == [graph.nodes[method_id]]
+        assert graph.neighbors(method_id, "contains") == [graph.nodes[inner_id]]
+    assert all(
+        edge.source in graph.nodes and edge.target in graph.nodes
+        for edge in graph.edges
+    )
+    assert graph.validate() == []
+
+    chunks_by_symbol = {chunk.symbol_id: chunk for chunk in chunks}
+    for method_id, inner_id in zip(method_ids, inner_ids, strict=True):
+        assert chunks_by_symbol[method_id].parent_symbol_id in class_ids
+        assert chunks_by_symbol[inner_id].parent_symbol_id == method_id
+
+
+def test_subdivide_chunks_uses_provider_tokens_and_keeps_source_ranges():
+    chunk = CodeChunk(
+        id="chunk:long",
+        file_path="example.py",
+        language="python",
+        kind="function",
+        symbol_id="function:example.py:long_running",
+        symbol_name="long_running",
+        start_line=10,
+        end_line=14,
+        content="\n".join(f"    value += {number}" for number in range(5)),
+        parent_symbol_id="file:example.py",
+    )
+
+    def count_tokens(text):
+        return len(text.split())
+
+    pieces = subdivide_chunks([chunk], max_tokens=25, count_tokens=count_tokens)
+
+    assert len(pieces) > 1
+    assert all(count_tokens(piece.embedding_text) <= 25 for piece in pieces)
+    assert "\n".join(piece.content for piece in pieces) == chunk.content
+    assert [(piece.start_line, piece.end_line) for piece in pieces] == [
+        (10, 11),
+        (12, 13),
+        (14, 14),
+    ]

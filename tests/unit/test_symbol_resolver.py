@@ -303,3 +303,24 @@ def test_does_not_resolve_ambiguous_import_aliases():
     relationships = resolve_symbols(files)
 
     assert relationships == []
+
+
+def test_does_not_treat_function_local_import_as_a_file_wide_binding(tmp_path):
+    from repox.analyzers.repository_analyzer import analyze_repository
+
+    (tmp_path / "helpers.py").write_text(
+        "def calculate():\n    return 1\n", encoding="utf-8"
+    )
+    (tmp_path / "main.py").write_text(
+        "def imported():\n"
+        "    from helpers import calculate\n"
+        "    return calculate()\n\n"
+        "def unrelated():\n"
+        "    return calculate()\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_repository(tmp_path)
+
+    assert analysis.files["main.py"].imports[0].scope == "local"
+    assert analysis.symbol_relationships == []

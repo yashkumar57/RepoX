@@ -133,10 +133,15 @@ def _collect_nested_functions(
 
 
 def _imports(module: ast.Module) -> list[ImportInfo]:
-    """Extract module and symbol imports, including imports in nested scopes."""
+    """Extract imports and retain whether their binding is module-wide."""
     imports: list[tuple[int, int, ImportInfo]] = []
 
-    for node in ast.walk(module):
+    stack: list[tuple[ast.AST, bool]] = [
+        (node, False) for node in reversed(module.body)
+    ]
+    while stack:
+        node, is_local = stack.pop()
+        scope = "local" if is_local else "module"
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(
@@ -148,6 +153,7 @@ def _imports(module: ast.Module) -> list[ImportInfo]:
                             alias=alias.asname,
                             kind="module",
                             location=_location(node),
+                            scope=scope,
                         ),
                     )
                 )
@@ -164,9 +170,17 @@ def _imports(module: ast.Module) -> list[ImportInfo]:
                             alias=alias.asname,
                             kind="symbol",
                             location=_location(node),
+                            scope=scope,
                         ),
                     )
                 )
+        child_is_local = is_local or isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        )
+        stack.extend(
+            (child, child_is_local)
+            for child in reversed(list(ast.iter_child_nodes(node)))
+        )
 
     imports.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in imports]

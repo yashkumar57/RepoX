@@ -117,8 +117,7 @@ def test_prompt_builder_separates_instructions_question_and_evidence(tmp_path):
     assert "inclusive line" in prompt.system_prompt
     assert "CITATION RULES (MANDATORY)" in prompt.system_prompt
     assert (
-        "exact citation copied from a 'Valid citation for this evidence' line"
-        in prompt.user_prompt
+        "one exact citation in the form [relative/path.py:12-24]" in prompt.user_prompt
     )
     assert "Valid citation for this evidence: [main.py:" in prompt.user_prompt
     assert prompt.estimated_tokens > 0

@@ -50,6 +50,54 @@ def class_node_ids(path: str, file_info: FileInfo) -> dict[int, str]:
     return result
 
 
+def function_parent_id(
+    path: str,
+    function: FunctionInfo,
+    file_info: FileInfo,
+    function_ids: dict[int, str],
+    class_ids: dict[int, str],
+) -> str | None:
+    """Return a function's canonical lexical parent ID, if it is known.
+
+    Location containment distinguishes repeated lexical names. An unresolved
+    parent returns ``None`` so callers never fabricate an ID without a node.
+    """
+    if function.parent_scope:
+        candidates = [
+            candidate
+            for candidate in _all_functions(file_info)
+            if _qualified_function_name(candidate) == function.parent_scope
+            and candidate.location is not None
+            and function.location is not None
+            and candidate.location.start_line <= function.location.start_line
+            and candidate.location.end_line >= function.location.end_line
+        ]
+        if len(candidates) == 1:
+            return function_ids[id(candidates[0])]
+
+        matching = [
+            candidate
+            for candidate in _all_functions(file_info)
+            if _qualified_function_name(candidate) == function.parent_scope
+        ]
+        return function_ids[id(matching[0])] if len(matching) == 1 else None
+
+    if function.parent_class:
+        candidates = [
+            item for item in file_info.classes if item.name == function.parent_class
+        ]
+        return class_ids[id(candidates[0])] if len(candidates) == 1 else None
+
+    return f"file:{path}"
+
+
+def _all_functions(file_info: FileInfo) -> list[FunctionInfo]:
+    functions = list(file_info.functions)
+    for class_info in file_info.classes:
+        functions.extend(class_info.methods)
+    return functions
+
+
 def _qualified_function_name(function: FunctionInfo) -> str:
     if function.parent_scope:
         return f"{function.parent_scope}.{function.name}"

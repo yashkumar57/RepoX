@@ -67,7 +67,7 @@ def _imported_symbols(
     imported = defaultdict(list)
 
     for item in file_info.imports:
-        if item.kind != "symbol" or not item.symbol:
+        if item.scope != "module" or item.kind != "symbol" or not item.symbol:
             continue
 
         local_name = item.alias or item.symbol
@@ -84,7 +84,7 @@ def _imported_modules(
     imported = defaultdict(list)
 
     for item in file_info.imports:
-        if item.kind != "module":
+        if item.scope != "module" or item.kind != "module":
             continue
 
         # Without an alias, Python binds `import package.submodule`
@@ -252,14 +252,16 @@ def _resolve_function(
 
         return candidates[0] if len(candidates) == 1 else None
 
-    # Resolve unqualified calls only when globally unambiguous.
+    # An unqualified call is safe only for one unshadowed definition in this
+    # file. Cross-file calls require an explicit module-scope import; otherwise
+    # a local binding, closure, or function-local import may own the name.
     candidates = [
         entry
         for entry in functions_by_name.get(name, [])
         if entry[2].parent_class is None and entry[2].parent_scope is None
     ]
 
-    if len(candidates) != 1:
+    if len(candidates) != 1 or candidates[0][0] != current_path:
         return None
 
     return candidates[0]

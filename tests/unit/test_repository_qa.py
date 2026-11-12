@@ -229,7 +229,7 @@ def test_ollama_adapter_uses_environment_host(monkeypatch):
     monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11435/")
     model = OllamaChatModel()
 
-    assert model.model_name == "qwen2.5-coder:3b"
+    assert model.model_name == "qwen2.5-coder:7b"
     assert model._host == "http://localhost:11435"
 
 

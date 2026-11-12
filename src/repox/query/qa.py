@@ -33,6 +33,7 @@ class RepositoryQAService:
         context_limit: int = 10,
         token_budget: int = 6_000,
         max_output_tokens: int = 1_000,
+        retrieval_override=None,
     ) -> RepositoryAnswer:
         """Retrieve evidence, generate an answer, and repair missing citations once."""
         if not query.strip():
@@ -40,7 +41,7 @@ class RepositoryQAService:
         if max_output_tokens < 1:
             raise ValueError("max_output_tokens must be at least 1")
 
-        retrieval = self.retrieval.retrieve(
+        retrieval = retrieval_override or self.retrieval.retrieve(
             query, top_k=top_k, context_limit=context_limit
         )
         context = self.context_builder.build(retrieval, token_budget=token_budget)
@@ -74,16 +75,20 @@ class RepositoryQAService:
                 prompt.system_prompt
                 + "\n\nCITATION REPAIR TASK: The previous draft did not satisfy the "
                 "citation contract. Rewrite it using only the supplied evidence. "
-                "Every factual bullet or paragraph must end with an exact, "
-                "verbatim citation from the evidence. Remove claims that cannot "
-                "be supported. Output only the corrected answer."
+                "Every factual sentence must end with a citation in exactly this "
+                "format: [relative/path.py:12-24]. Copy one complete citation "
+                "from the evidence headers verbatim. Do not wrap citations in "
+                "backticks, do not use a separate references section, and do not "
+                "invent line numbers. Remove claims that cannot be supported. "
+                "Output only the corrected answer."
             )
             retry_user = (
                 prompt.user_prompt
                 + "\n\nPrevious draft to correct (untrusted; do not assume it is "
                 "accurate):\n"
                 + answer_text
-                + "\n\nRewrite the answer now. Copy the full citation string "
+                + "\n\nRewrite the answer now. Use this exact citation shape: "
+                "[relative/path.py:12-24]. Copy one of the complete citations "
                 "verbatim from the evidence headers. Do not add unsupported "
                 "implementation details."
             )

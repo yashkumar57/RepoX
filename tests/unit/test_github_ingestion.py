@@ -161,3 +161,21 @@ def test_rejects_unknown_or_malformed_checkout_id(tmp_path: Path) -> None:
 
     with pytest.raises(RepositoryNotFoundError):
         service.get_checkout("../../outside")
+
+
+def test_reuses_existing_checkout_for_same_repository(tmp_path: Path) -> None:
+    from repox.ingestion.github import RepositoryCheckout
+
+    service = GitHubRepositoryService(tmp_path / "workspace")
+    existing = RepositoryCheckout(
+        repository_id="a" * 32,
+        owner="pallets",
+        name="itsdangerous",
+        url="https://github.com/pallets/itsdangerous.git",
+        branch="main",
+        path=tmp_path / "workspace" / ("a" * 32),
+    )
+    with patch.object(service, "list_checkouts", return_value=[existing]):
+        checkout = service.clone("https://github.com/pallets/itsdangerous")
+
+    assert checkout is existing

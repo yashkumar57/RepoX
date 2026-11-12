@@ -126,6 +126,7 @@ def load_database():
 
     assert ("sqlite3", None) in imports
     assert ("database", "connect") in imports
+    assert all(item.scope == "local" for item in result.imports)
 
 
 def test_parser_extracts_nested_functions():
