@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">RepoX circuit R mark</title>
+  <desc id="desc">A cyan to neon green circuit-board letter R with code brackets and connected nodes.</desc>
+  <defs>
+    <linearGradient id="repox-gradient" x1="16" y1="18" x2="112" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16d8f5"/><stop offset=".52" stop-color="#18efb4"/><stop offset="1" stop-color="#b7ff16"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#repox-gradient)" stroke-linecap="square" stroke-linejoin="round">
+    <path stroke-width="7" d="M34 106V28h39c20 0 29 12 29 27 0 14-9 26-29 26H47m20 0 39 25"/>
+    <path stroke-width="5" d="M31 22h45c18 0 30 9 33 24M24 38h28l13 13h20M45 92h22l25 25M39 110V70l-13-13V34M93 39v27l-15 15"/>
+    <path stroke-width="6" d="M18 54 7 64l11 10M110 54l11 10-11 10"/>
+  </g>
+  <g fill="#10131a" stroke="url(#repox-gradient)" stroke-width="4">
+    <circle cx="47" cy="22" r="5"/><circle cx="79" cy="36" r="5"/><circle cx="93" cy="66" r="5"/>
+    <circle cx="39" cy="105" r="5"/><circle cx="67" cy="81" r="5"/><circle cx="92" cy="106" r="5"/>
+  </g>
+</svg>

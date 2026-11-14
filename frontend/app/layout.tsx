@@ -5,6 +5,10 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'RepoX — Repository intelligence',
   description: 'Structural code intelligence, semantic search, and evidence-backed repository Q&A.',
+  icons: {
+    icon: '/branding/repox-mark.svg',
+    apple: '/branding/repox-mark.svg',
+  },
 }
 
 export const viewport: Viewport = {

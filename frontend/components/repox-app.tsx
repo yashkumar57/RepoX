@@ -1,7 +1,30 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { askRepository, createRepository, debugRepository, getRepositoryGraph, indexRepository, listRepositories, searchRepository, type RepositoryAskResponse, type RepositoryCreateResponse, type RepositoryDebugResponse, type RepositoryGraphResponse, type RepositoryIndexResponse, type RepositorySearchResponse } from '@/lib/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  askRepository,
+  createRepository,
+  debugRepository,
+  getApiHealth,
+  getRepository,
+  getRepositoryGraph,
+  indexRepository,
+  listRepositories,
+  searchRepository,
+  type RepositoryAskResponse,
+  type RepositoryCreateResponse,
+  type RepositoryDebugResponse,
+  type RepositoryGraphResponse,
+  type RepositoryIndexResponse,
+  type RepositoryRecordResponse,
+  type RepositorySearchResponse,
+} from '@/lib/api'
+import { expandGraphNodeIds, graphNodePositions, initialGraphNodeIds, MAX_GRAPH_NODE_LIMIT } from '@/lib/graph-explorer'
+import {
+  loadWorkspaceSession,
+  saveWorkspaceSession,
+  type AskConversationState,
+} from '@/lib/workspace-session'
 import {
   Activity,
   ArrowRight,
@@ -24,7 +47,9 @@ import {
   Lightbulb,
   Link2,
   Menu,
+  Minus,
   Moon,
+  Maximize2,
   Network,
   Plus,
   Search,
@@ -48,22 +73,86 @@ const navItems: { id: Screen; label: string; icon: typeof LayoutDashboard }[] = 
   { id: 'graph', label: 'Code graph', icon: Network },
 ]
 
+type HealthStatus = 'checking' | 'connected' | 'disconnected'
+
+function indexedRepositories(records: RepositoryRecordResponse[]): RepositoryRecordResponse[] {
+  const seen = new Set<string>()
+  return records.filter(record => {
+    if (record.status !== 'indexed' || !record.index_result || seen.has(record.repository_id)) return false
+    seen.add(record.repository_id)
+    return true
+  })
+}
+
+function useApiHeartbeat(): HealthStatus {
+  const [status, setStatus] = useState<HealthStatus>('checking')
+
+  useEffect(() => {
+    let active = true
+    const check = async () => {
+      if (active) setStatus('checking')
+      try {
+        const health = await getApiHealth()
+        if (active) setStatus(health.status === 'ok' ? 'connected' : 'disconnected')
+      } catch {
+        if (active) setStatus('disconnected')
+      }
+    }
+    void check()
+    const interval = window.setInterval(() => void check(), 25_000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [])
+
+  return status
+}
+
 export function RepoXApp() {
   const [screen, setScreen] = useState<Screen>('overview')
   const [dark, setDark] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [repository, setRepository] = useState<RepositoryCreateResponse | null>(null)
   const [indexResult, setIndexResult] = useState<RepositoryIndexResponse | null>(null)
-  const repo = repository ? `${repository.owner} / ${repository.name}` : 'No repository connected'
+  const [repositories, setRepositories] = useState<RepositoryRecordResponse[]>([])
+  const [repositoryError, setRepositoryError] = useState<string | null>(null)
+  const [repositoryMenuOpen, setRepositoryMenuOpen] = useState(false)
+  const [conversations, setConversations] = useState<Record<string, AskConversationState>>({})
+  const [sessionReady, setSessionReady] = useState(false)
+  const lastSessionPayload = useRef('')
+  const heartbeat = useApiHeartbeat()
+  const repo = repository ? `${repository.owner ? `${repository.owner} / ` : ''}${repository.name}` : 'No repository connected'
   const [selectedNode, setSelectedNode] = useState('')
 
   useEffect(() => {
+    const stored = loadWorkspaceSession()
+    setRepository(stored.repository)
+    setIndexResult(stored.indexResult)
+    setConversations(stored.conversations)
+    setSessionReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (!sessionReady) return
+    const payload = JSON.stringify({ repository, indexResult, conversations })
+    if (payload === lastSessionPayload.current) return
+    const timeout = window.setTimeout(() => {
+      saveWorkspaceSession({ repository, indexResult, conversations })
+      lastSessionPayload.current = payload
+    }, 250)
+    return () => window.clearTimeout(timeout)
+  }, [conversations, indexResult, repository, sessionReady])
+
+  useEffect(() => {
+    if (!sessionReady) return
     let cancelled = false
     async function restoreWorkspace() {
       try {
-        const repositories = await listRepositories()
+        const available = indexedRepositories(await listRepositories())
         if (cancelled) return
-        const active = repositories[0]
+        setRepositories(available)
+        const active = available.find(item => item.repository_id === repository?.repository_id) ?? available[0]
         if (active) {
           setRepository({
             repository_id: active.repository_id,
@@ -74,6 +163,9 @@ export function RepoXApp() {
             status: 'cloned',
           })
           setIndexResult(active.index_result)
+        } else {
+          setRepository(null)
+          setIndexResult(null)
         }
       } catch (cause) {
         if (!cancelled) {
@@ -84,7 +176,32 @@ export function RepoXApp() {
     }
     void restoreWorkspace()
     return () => { cancelled = true }
-  }, [])
+  }, [repository?.repository_id, sessionReady])
+
+  const conversation = repository
+    ? conversations[repository.repository_id] ?? { draft: '', entries: [] }
+    : { draft: '', entries: [] }
+  const updateConversation = (value: AskConversationState) => {
+    if (!repository) return
+    setConversations(current => ({ ...current, [repository.repository_id]: value }))
+  }
+  const selectRepository = async (repositoryId: string) => {
+    setRepositoryMenuOpen(false)
+    if (repositoryId === repository?.repository_id) return
+    setRepositoryError(null)
+    try {
+      const record = await getRepository(repositoryId)
+      if (record.status !== 'indexed' || !record.index_result) {
+        throw new Error('This repository no longer has an available index.')
+      }
+      setRepository(record)
+      setIndexResult(record.index_result)
+      setSelectedNode('')
+    } catch (cause) {
+      setRepositories(current => current.filter(item => item.repository_id !== repositoryId))
+      setRepositoryError(cause instanceof Error ? cause.message : 'The selected repository is unavailable.')
+    }
+  }
 
   const themeClass = dark ? 'dark' : 'light'
   const pageTitle = useMemo(() => ({ overview: 'Repository overview', onboarding: 'Connect a repository', search: 'Semantic code search', ask: 'Ask RepoX', debug: 'Debug an issue', graph: 'Code graph', settings: 'Settings' })[screen], [screen])
@@ -94,14 +211,18 @@ export function RepoXApp() {
       <div className="repox-shell">
         <aside className={`repox-sidebar ${sidebarOpen ? 'is-open' : ''}`}>
           <div className="brand-row">
-            <div className="brand-mark"><Code2 /></div>
+            <img className="brand-mark" src="/branding/repox-mark.svg" alt="RepoX" />
             <div><div className="brand-name">RepoX</div><div className="brand-kicker">Repository intelligence</div></div>
             <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close menu"><X /></button>
           </div>
-          <div className="repo-switcher">
+          <div className="repo-switcher-wrap">
+          <button className="repo-switcher" type="button" aria-haspopup="listbox" aria-expanded={repositoryMenuOpen} aria-controls="indexed-repository-menu" onClick={() => setRepositoryMenuOpen(open => !open)} onKeyDown={event => { if (event.key === 'Escape') setRepositoryMenuOpen(false) }} disabled={!repositories.length}>
             <div className="repo-avatar"><GitFork /></div>
-            <div className="repo-meta"><span className="eyebrow">ACTIVE REPOSITORY</span><strong>{repo}</strong><span className="mono muted">{repository ? `${repository.branch ?? 'default branch'} · ${indexResult ? 'indexed' : 'not indexed'}` : 'Connect a GitHub repository'}</span></div><ChevronDown className="muted" />
+            <div className="repo-meta"><span className="eyebrow">ACTIVE REPOSITORY</span><strong>{repository ? `${repository.owner}/${repository.name}` : 'No indexed repositories'} <ChevronDown aria-hidden="true" /></strong><span className="mono muted">{repository ? `${repository.branch ?? 'default branch'} · indexed` : 'Connect and index a GitHub repository'}</span></div>
+          </button>
+          {repositoryMenuOpen && <div id="indexed-repository-menu" className="repository-menu" role="listbox" aria-label="Indexed repositories">{repositories.map(item => <button type="button" role="option" aria-selected={item.repository_id === repository?.repository_id} className={`repository-option ${item.repository_id === repository?.repository_id ? 'active' : ''}`} key={item.repository_id} onClick={() => void selectRepository(item.repository_id)}><span>{item.owner}/{item.name}</span><small>{item.branch ?? 'default branch'} · {item.index_result?.analyzed_files.toLocaleString()} files</small></button>)}</div>}
           </div>
+          {repositoryError && <div className="repo-switch-error" role="alert">{repositoryError}</div>}
           <div className="nav-section-label">Workspace</div>
           <nav className="side-nav" aria-label="Primary navigation">
             {navItems.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${screen === id ? 'active' : ''}`} onClick={() => { setScreen(id); setSidebarOpen(false) }}><Icon /><span>{label}</span>{id === 'ask' && <span className="nav-shortcut">⌘ K</span>}</button>)}
@@ -114,10 +235,10 @@ export function RepoXApp() {
         </aside>
         {sidebarOpen && <button className="sidebar-scrim mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
         <main className="repox-main">
-          <header className="topbar"><button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open menu"><Menu /></button><div className="breadcrumbs"><span>acme</span><ChevronRight /><strong>{pageTitle}</strong></div><div className="top-actions"><button className="icon-button" aria-label="Activity"><Activity /></button><div className="avatar">JD</div></div></header>
-          <div className="page-content">{screen === 'overview' && <Overview onNavigate={setScreen} repository={repository} indexResult={indexResult} />}{screen === 'onboarding' && <Onboarding onConnected={(value, result) => { setRepository(value); setIndexResult(result); setScreen('overview') }} />}{screen === 'search' && <SearchScreen key={repository?.repository_id ?? 'none'} repositoryId={repository?.repository_id ?? null} initialQuery="" />}{screen === 'ask' && <AskScreen key={repository?.repository_id ?? 'none'} repositoryId={repository?.repository_id ?? null} />}<div style={{ display: screen === 'debug' ? 'contents' : 'none' }}>
+          <header className="topbar"><button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open menu"><Menu /></button><div className="breadcrumbs"><span>{repository ? repo : 'Repository'}</span>{repository?.branch && <><ChevronRight /><span>{repository.branch}</span></>}<ChevronRight /><strong>{pageTitle}</strong></div><div className="top-actions"><button className={`icon-button heartbeat ${heartbeat}`} aria-label={`API status: ${heartbeat}`} title={heartbeat === 'checking' ? 'Checking RepoX API connection' : heartbeat === 'connected' ? 'RepoX API connected' : 'RepoX API disconnected'}><Activity /></button><a className="icon-button" href="https://github.com/yashkumar57/RepoX#readme" target="_blank" rel="noreferrer" aria-label="RepoX help and documentation" title="Help and documentation"><BookOpen /></a></div></header>
+          <div className="page-content">{screen === 'overview' && <Overview onNavigate={setScreen} repository={repository} indexResult={indexResult} />}{screen === 'onboarding' && <Onboarding onConnected={(value, result) => { setRepository(value); setIndexResult(result); setScreen('overview') }} />}{screen === 'search' && <SearchScreen key={repository?.repository_id ?? 'none'} repositoryId={repository?.repository_id ?? null} initialQuery="" />}{screen === 'ask' && <AskScreen repositoryId={repository?.repository_id ?? null} conversation={conversation} onConversationChange={updateConversation} />}<div style={{ display: screen === 'debug' ? 'contents' : 'none' }}>
             <DebugScreen repositoryId={repository?.repository_id ?? null} />
-          </div> {screen === 'graph' && <GraphScreen repositoryId={repository?.repository_id ?? null} selectedNode={selectedNode} setSelectedNode={setSelectedNode} />} {screen === 'settings' && <SettingsScreen dark={dark} setDark={setDark} />}</div>
+          </div> {screen === 'graph' && <GraphScreen repositoryId={repository?.repository_id ?? null} selectedNode={selectedNode} setSelectedNode={setSelectedNode} />} {screen === 'settings' && <SettingsScreen dark={dark} setDark={setDark} />}</div><footer className="app-footer"><img src="/branding/repox-mark.svg" alt="" /><span>RepoX</span><a href="https://github.com/yashkumar57/RepoX" target="_blank" rel="noreferrer">GitHub</a><a href="mailto:ykverma5718@gmail.com">Contact</a><a href="https://github.com/yashkumar57/RepoX#readme" target="_blank" rel="noreferrer">Documentation</a></footer>
         </main>
       </div>
     </div>
@@ -229,9 +350,9 @@ function SearchScreen({ repositoryId, initialQuery }: { repositoryId: string | n
   return <><PageHeader eyebrow="SEARCH / SEMANTIC" title="Semantic code search" description="Find concepts and implementations across the indexed repository." /><form className="search-bar" onSubmit={event => { event.preventDefault(); if (!loading) void runSearch() }}><Search /><input aria-label="Semantic search query" value={query} onChange={event => setQuery(event.target.value)} placeholder="Describe the code or concept you want to find" /><span className="kbd">↵ Enter</span><button type="submit" className="button primary" disabled={loading || !repositoryId || !query.trim()}>{loading ? <><Activity className="spin" /> Searching…</> : 'Search'}</button></form><div className="search-toolbar"><span className="muted">{result ? `${result.result_count} results for “${result.query}”` : hasSearched && !loading ? 'No results' : 'Search the active repository'}</span><div className="toolbar-actions"><label className="select-label">Top K <select value={topK} onChange={event => setTopK(event.target.value)}><option value="8">8</option><option value="12">12</option><option value="20">20</option></select></label><span className="muted">Active repository only</span></div></div>{error && <div className="error-message" role="alert">{error}</div>}{!repositoryId && <div className="empty-answer"><h2>No active repository</h2><p>Connect and index a repository before running semantic search.</p></div>}{loading && <div className="panel muted">Embedding query and retrieving source chunks…</div>}{result && result.results.length === 0 && !loading && <div className="panel empty-answer"><h2>No matching code found</h2><p>Try different wording or increase Top K.</p></div>}<div className="search-results">{result?.results.map((item, index) => <div className="result-card" key={`${item.file_path}:${item.start_line}:${item.symbol_id}`}><div className="result-heading"><div><span className="result-index">{String(index + 1).padStart(2, '0')}</span><strong>{item.symbol_name || item.file_path}</strong><span className="type-chip">{item.kind}</span></div><span className="relevance"><Sparkles /> {item.score.toFixed(3)} similarity</span></div><div className="result-meta"><span className="mono"><FileCode2 /> {item.file_path}</span><span className="mono">Lines {item.start_line}–{item.end_line}</span><span className="lang-dot" /> {item.language}</div><div className="code-preview"><div className="code-top"><span>indexed source</span><button className="icon-button" onClick={() => void copyCode(item.content)} aria-label="Copy source">{copied === item.content ? <Check /> : <Copy />}</button></div><pre><code>{item.content}</code></pre></div></div>)}</div></>
 }
 
-function AskScreen({ repositoryId }: { repositoryId: string | null }) {
-  const [question, setQuestion] = useState('')
-  const [result, setResult] = useState<RepositoryAskResponse | null>(null)
+function AskScreen({ repositoryId, conversation, onConversationChange }: { repositoryId: string | null; conversation: AskConversationState; onConversationChange: (conversation: AskConversationState) => void }) {
+  const question = conversation.draft
+  const result = conversation.entries.at(-1)?.response ?? null
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -240,18 +361,20 @@ function AskScreen({ repositoryId }: { repositoryId: string | null }) {
     if (!question.trim()) { setError('Enter a question about the repository.'); return }
     setLoading(true)
     setError('')
-    setResult(null)
     try {
-      setResult(await askRepository(repositoryId, { query: question.trim(), top_k: 6, context_limit: 8 }))
+      const response = await askRepository(repositoryId, { query: question.trim(), top_k: 6, context_limit: 8 })
+      onConversationChange({
+        draft: '',
+        entries: [...conversation.entries, { query: question.trim(), response }],
+      })
     } catch (cause) {
-      setResult(null)
       setError(cause instanceof Error ? cause.message : 'The question could not be answered.')
     } finally {
       setLoading(false)
     }
   }
 
-  return <><PageHeader eyebrow="ASK / REPOSITORY Q&A" title="Ask RepoX" description="Answers are generated from retrieved source in the active repository and linked to validated evidence." /><div className="ask-layout"><div className="ask-answer panel"><div className="answer-top"><div className="assistant-avatar"><Sparkles /></div><div><strong>RepoX answer</strong>{result && <span className="muted">Generated by {result.model}</span>}</div>{result && <span className={`badge ${result.citations.length ? 'success' : 'muted-badge'}`}>{result.citations.length} validated citations</span>}</div>{loading ? <div className="empty-answer"><Activity className="spin" /><h2>Retrieving evidence and generating an answer…</h2><p>This may take a little while when the local model is loading.</p></div> : result ? <div className="answer-body"><div className="answer-text" dangerouslySetInnerHTML={{ __html: renderDebugMarkdown(result.answer) }} />{result.citation_fallback_used && <div className="evidence-box"><strong>Evidence-only fallback</strong><p>The model did not produce a citation-compliant answer. The response contains retrieved source excerpts rather than a synthesized explanation.</p></div>}{result.citations.length > 0 && <div className="evidence-box"><div className="eyebrow">VALIDATED SOURCE CITATIONS</div>{result.citations.map(citation => <p className="mono" key={`${citation.file_path}:${citation.start_line}:${citation.end_line}`}>{citation.file_path}:{citation.start_line}–{citation.end_line}</p>)}</div>}</div> : <div className="empty-answer"><Sparkles /><h2>Ask a question about your repository</h2><p>RepoX retrieves relevant source, then generates an answer with validated citations.</p></div>}</div><div className="ask-composer panel"><div className="composer-label"><span>Repository question</span><span className="muted mono">Ctrl / ⌘ + Enter</span></div><textarea value={question} onChange={event => setQuestion(event.target.value)} placeholder="e.g. How is Dijkstra's shortest path algorithm implemented?" onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !loading) { event.preventDefault(); void runAsk() } }} /><div className="composer-footer"><span className="muted">Uses the currently selected repository</span><button className="button primary" onClick={() => void runAsk()} disabled={loading || !repositoryId}>{loading ? <><Activity className="spin" /> Asking…</> : <><Send /> Ask RepoX</>}</button></div>{error && <div className="error-message" role="alert">{error}</div>}</div></div></>
+  return <><PageHeader eyebrow="ASK / REPOSITORY Q&A" title="Ask RepoX" description="Answers are generated from retrieved source in the active repository and linked to validated evidence." /><div className="ask-layout"><div className="ask-answer panel"><div className="answer-top"><div className="assistant-avatar"><Sparkles /></div><div><strong>RepoX conversation</strong>{result && <span className="muted">Latest answer by {result.model}</span>}</div>{result && <span className={`badge ${result.citations.length ? 'success' : 'muted-badge'}`}>{conversation.entries.length} answers</span>}</div>{loading ? <div className="empty-answer"><Activity className="spin" /><h2>Retrieving evidence and generating an answer…</h2><p>This may take a little while when the local model is loading.</p></div> : result ? <div className="conversation-history">{conversation.entries.map((entry, index) => <div className="answer-body conversation-entry" key={`${entry.query}:${index}`}><p className="conversation-question"><strong>You:</strong> {entry.query}</p><div className="answer-text" dangerouslySetInnerHTML={{ __html: renderDebugMarkdown(entry.response.answer) }} />{entry.response.citation_fallback_used && <div className="evidence-box"><strong>Evidence-only fallback</strong><p>The model did not produce a citation-compliant answer. The response contains retrieved source excerpts rather than a synthesized explanation.</p></div>}{entry.response.citations.length > 0 && <div className="evidence-box"><div className="eyebrow">VALIDATED SOURCE CITATIONS</div>{entry.response.citations.map(citation => <p className="mono" key={`${citation.file_path}:${citation.start_line}:${citation.end_line}`}>{citation.file_path}:{citation.start_line}–{citation.end_line}</p>)}</div>}</div>)}</div> : <div className="empty-answer"><Sparkles /><h2>Ask a question about your repository</h2><p>RepoX retrieves relevant source, then generates an answer with validated citations.</p></div>}</div><div className="ask-composer panel"><div className="composer-label"><span>Repository question</span><span className="muted mono">Ctrl / ⌘ + Enter</span></div><textarea value={question} onChange={event => onConversationChange({ ...conversation, draft: event.target.value })} placeholder="e.g. How is Dijkstra's shortest path algorithm implemented?" onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !loading) { event.preventDefault(); void runAsk() } }} /><div className="composer-footer"><span className="muted">Uses the currently selected repository</span><button className="button primary" onClick={() => void runAsk()} disabled={loading || !repositoryId}>{loading ? <><Activity className="spin" /> Asking…</> : <><Send /> Ask RepoX</>}</button></div>{error && <div className="error-message" role="alert">{error}</div>}</div></div></>
 }
 
 function DebugScreen({ repositoryId }: { repositoryId: string | null }) {
@@ -345,6 +468,13 @@ function GraphScreen({ repositoryId, selectedNode, setSelectedNode }: { reposito
   const [graph, setGraph] = useState<RepositoryGraphResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [visibleIds, setVisibleIds] = useState<string[]>([])
+  const [nodeTypes, setNodeTypes] = useState<string[]>(['file', 'class', 'function'])
+  const [relationshipKinds, setRelationshipKinds] = useState<string[]>([])
+  const [symbolQuery, setSymbolQuery] = useState('')
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const dragStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null)
 
   useEffect(() => {
     if (!repositoryId) {
@@ -355,28 +485,28 @@ function GraphScreen({ repositoryId, selectedNode, setSelectedNode }: { reposito
     setLoading(true)
     setError(null)
     getRepositoryGraph(repositoryId)
-      .then(value => { if (!cancelled) { setGraph(value); setSelectedNode(value.nodes[0]?.id ?? '') } })
+      .then(value => { if (!cancelled) { const initial = initialGraphNodeIds(value); setGraph(value); setVisibleIds(initial); setRelationshipKinds(Object.keys(value.summary.relationship_kinds)); setSelectedNode(initial[0] ?? ''); setZoom(1); setPan({ x: 0, y: 0 }) } })
       .catch(cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : 'Could not load repository graph.') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [repositoryId, setSelectedNode])
 
-  const visibleNodes = graph?.nodes.slice(0, 24) ?? []
-  const positions = useMemo(() => {
-    const columns = 4
-    const rows = Math.max(visibleNodes.length ? Math.ceil(visibleNodes.length / columns) : 1, 1)
-    return new Map(visibleNodes.map((node, index) => {
-      const column = index % columns
-      const row = Math.floor(index / columns)
-      return [node.id, { x: 12.5 + column * 25, y: rows === 1 ? 50 : 10 + row * (80 / (rows - 1)) }] as const
-    }))
-  }, [visibleNodes])
-
+  const allVisibleIds = useMemo(() => new Set(visibleIds), [visibleIds])
+  const visibleNodes = useMemo(() => (graph?.nodes ?? []).filter(node => allVisibleIds.has(node.id) && nodeTypes.includes(node.kind)), [allVisibleIds, graph, nodeTypes])
+  const displayedIds = useMemo(() => new Set(visibleNodes.map(node => node.id)), [visibleNodes])
+  const visibleEdges = useMemo(() => (graph?.edges ?? []).filter(edge => displayedIds.has(edge.source) && displayedIds.has(edge.target) && relationshipKinds.includes(edge.kind)), [displayedIds, graph, relationshipKinds])
+  const positions = useMemo(() => graphNodePositions(visibleNodes.map(node => node.id)), [visibleNodes])
   const selected = graph?.nodes.find(node => node.id === selectedNode) ?? visibleNodes[0]
-  const visibleIds = new Set(visibleNodes.map(node => node.id))
-  const visibleEdges = (graph?.edges ?? []).filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target))
   const outgoing = (graph?.edges ?? []).filter(edge => edge.source === selected?.id)
   const incoming = (graph?.edges ?? []).filter(edge => edge.target === selected?.id)
+  const focusSymbol = () => {
+    const query = symbolQuery.trim().toLowerCase()
+    const match = graph?.nodes.find(node => node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query) || node.id.toLowerCase().includes(query))
+    if (!graph || !match) return
+    setVisibleIds(current => expandGraphNodeIds(graph, current, match.id))
+    setSelectedNode(match.id)
+  }
+  const toggle = (value: string, setValue: (next: string[]) => void, current: string[]) => setValue(current.includes(value) ? current.filter(item => item !== value) : [...current, value])
 
   return <>
     <PageHeader eyebrow="EXPLORE / RELATIONSHIPS" title="Code graph" description="Explore actual files, symbols and relationships extracted from the indexed repository." />
@@ -391,31 +521,38 @@ function GraphScreen({ repositoryId, selectedNode, setSelectedNode }: { reposito
       <div className="panel graph-panel">
         <div className="graph-toolbar">
           <div className="legend"><span><i className="legend-dot primary" /> Classes</span><span><i className="legend-dot violet" /> Functions</span><span><i className="legend-dot success" /> Files</span></div>
-          <span className="muted mono">{visibleNodes.length} / {graph.nodes.length} nodes · {visibleEdges.length} visible edges</span>
+          <span className="muted mono">{visibleNodes.length} / {graph.nodes.length} nodes · {visibleEdges.length} / {graph.edges.length} edges</span>
         </div>
-        <div className="graph-canvas">
-          <svg className="edges" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        <div className="graph-controls"><form onSubmit={event => { event.preventDefault(); focusSymbol() }}><input aria-label="Find graph symbol" value={symbolQuery} onChange={event => setSymbolQuery(event.target.value)} placeholder="Find a symbol or file" /><button className="icon-button" type="submit" aria-label="Focus graph symbol"><Search /></button></form><div className="graph-filters"><span>Nodes</span>{['file', 'class', 'function'].map(kind => <label key={kind}><input type="checkbox" checked={nodeTypes.includes(kind)} onChange={() => toggle(kind, setNodeTypes, nodeTypes)} />{kind}</label>)}<span>Edges</span>{Object.keys(graph.summary.relationship_kinds).map(kind => <label key={kind}><input type="checkbox" checked={relationshipKinds.includes(kind)} onChange={() => toggle(kind, setRelationshipKinds, relationshipKinds)} />{kind}</label>)}</div><div className="graph-zoom"><button className="icon-button" onClick={() => setZoom(value => Math.max(.5, value - .15))} aria-label="Zoom out"><Minus /></button><button className="icon-button" onClick={() => setZoom(value => Math.min(2, value + .15))} aria-label="Zoom in"><Plus /></button><button className="icon-button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} aria-label="Fit graph to view"><Maximize2 /></button></div></div>
+        {visibleNodes.length === 0 ? <div className="graph-empty"><Network /><h2>No relationships match these filters</h2><p>Choose a node type or relationship filter with extracted graph data.</p></div> : <div className="graph-canvas" onPointerDown={event => { dragStart.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={event => { const start = dragStart.current; if (start) setPan({ x: start.panX + event.clientX - start.x, y: start.panY + event.clientY - start.y }) }} onPointerUp={() => { dragStart.current = null }}>
+          <div className="graph-stage" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
+          <svg className="edges" viewBox="0 0 1000 600" aria-hidden="true"><defs><marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" /></marker></defs>
             {visibleEdges.map((edge, index) => {
               const from = positions.get(edge.source)
               const to = positions.get(edge.target)
               if (!from || !to) return null
-              return <line key={`${edge.source}-${edge.target}-${edge.kind}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+              const x = (from.x + to.x) / 2
+              const y = (from.y + to.y) / 2
+              return <g key={`${edge.source}-${edge.target}-${edge.kind}-${index}`}><line x1={from.x} y1={from.y} x2={to.x} y2={to.y} markerEnd="url(#graph-arrow)" /><text x={x} y={y}>{edge.kind}</text></g>
             })}
           </svg>
           {visibleNodes.map(node => {
             const point = positions.get(node.id)
             if (!point) return null
             const tone = node.kind === 'class' ? 'primary' : node.kind === 'file' ? 'success' : 'violet'
-            return <button key={node.id} title={`${node.path}${node.start_line ? `:${node.start_line}` : ''}`} className={`graph-node ${tone} ${selected?.id === node.id ? 'selected' : ''}`} style={{ left: `${point.x}%`, top: `${point.y}%` }} onClick={() => setSelectedNode(node.id)}><span className="node-symbol">{node.kind === 'class' ? <Code2 /> : node.kind === 'file' ? <FolderGit2 /> : <TerminalSquare />}</span><span>{node.name}</span><small>{node.kind}</small></button>
+            return <button key={node.id} title={`${node.path}${node.start_line ? `:${node.start_line}` : ''}`} className={`graph-node ${tone} ${selected?.id === node.id ? 'selected' : ''}`} style={{ left: point.x, top: point.y }} onPointerDown={event => event.stopPropagation()} onClick={() => setSelectedNode(node.id)}><span className="node-symbol">{node.kind === 'class' ? <Code2 /> : node.kind === 'file' ? <FolderGit2 /> : <TerminalSquare />}</span><span>{node.name}</span><small>{node.kind}</small></button>
           })}
+          </div>
         </div>
-        {graph.nodes.length > visibleNodes.length && <p className="muted graph-limit-note">Showing the first {visibleNodes.length} nodes to keep the visualization responsive. The API returns the complete graph.</p>}
+        }
+        <p className="muted graph-limit-note">Showing an explorable subset of the complete graph. Select a node then expand its actual neighbors; at most {MAX_GRAPH_NODE_LIMIT} nodes render at once.</p>
       </div>
       <div className="panel node-details">
         {selected ? <>
           <div className="eyebrow">SELECTED {selected.kind.toUpperCase()}</div>
           <h2>{selected.name}</h2>
           <span className="badge">{selected.language}</span>
+          <button className="button secondary" onClick={() => graph && setVisibleIds(current => expandGraphNodeIds(graph, current, selected.id))} disabled={!graph || visibleIds.length >= MAX_GRAPH_NODE_LIMIT}>Expand neighbors</button>
           <div className="detail-block"><span className="eyebrow">SOURCE LOCATION</span><strong className="mono">{selected.path}{selected.start_line ? `:${selected.start_line}${selected.end_line && selected.end_line !== selected.start_line ? `–${selected.end_line}` : ''}` : ''}</strong></div>
           <div className="detail-block"><span className="eyebrow">OUTGOING RELATIONSHIPS ({outgoing.length})</span>{outgoing.slice(0, 8).map((edge, index) => <div className="relationship" key={`${edge.target}-${index}`}><ArrowRight /> {edge.kind} <span className="mono">{graph.nodes.find(node => node.id === edge.target)?.name ?? edge.target}</span></div>)}{outgoing.length === 0 && <span className="muted">No outgoing relationships.</span>}</div>
           <div className="detail-block"><span className="eyebrow">INCOMING RELATIONSHIPS ({incoming.length})</span>{incoming.slice(0, 8).map((edge, index) => <div className="relationship" key={`${edge.source}-${index}`}><ArrowRight /> {edge.kind} from <span className="mono">{graph.nodes.find(node => node.id === edge.source)?.name ?? edge.source}</span></div>)}{incoming.length === 0 && <span className="muted">No incoming relationships.</span>}</div>

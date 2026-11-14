@@ -36,6 +36,11 @@ interface ApiErrorBody {
   detail?: string | Array<{ msg?: string; loc?: (string | number)[] }>
 }
 
+export interface HealthResponse {
+  status: 'ok' | string
+  service: string
+}
+
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_REPOX_API_URL ?? 'http://127.0.0.1:8000'
 ).replace(/\/$/, '')
@@ -98,6 +103,16 @@ export function indexRepository(
 
 export function getApiBaseUrl(): string {
   return API_BASE_URL
+}
+
+export async function getApiHealth(timeoutMs = 5_000): Promise<HealthResponse> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await request<HealthResponse>('/health', { signal: controller.signal })
+  } finally {
+    window.clearTimeout(timeout)
+  }
 }
 
 
